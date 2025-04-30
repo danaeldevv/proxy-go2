@@ -12,13 +12,16 @@ apt install -y golang git
 echo "=== instalando ou atualizando ==="
 INSTALL_DIR="/opt/proxyeuro"
 
-if [ -d "$INSTALL_DIR" ]; then
+if [ -d "$INSTALL_DIR/.git" ]; then
     echo "Diretório já existe. Atualizando..."
     cd "$INSTALL_DIR"
     git pull
 else
+    echo "Clonando repositório..."
+    rm -rf "$INSTALL_DIR"
     git clone https://github.com/jeanfraga33/proxy-go2.git "$INSTALL_DIR"
 fi
+
 
 echo "=== Gerando certificados TLS autoassinados ==="
 cd "$INSTALL_DIR"

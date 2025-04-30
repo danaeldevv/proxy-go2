@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
+#!/bin/bash
+set -e
+
 echo "=== Instalando dependências ==="
-if ! command -v go &> /dev/null; then
-    echo "Go não encontrado. Instalando..."
-    apt update && apt install -y golang
-else
-    echo "dependencia já está instalada."
-fi
+apt update
+apt install -y golang git
+
 
 echo "=== instalando ou atualizando ==="
 INSTALL_DIR="/opt/proxyeuro"

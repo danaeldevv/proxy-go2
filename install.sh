@@ -1,34 +1,34 @@
 #!/bin/bash
-
 set -e
 
 echo "=== Instalando dependências ==="
 if ! command -v go &> /dev/null; then
-    echo "não encontrado a dependencia. Instalando..."
+    echo "Go não encontrado. Instalando..."
     apt update && apt install -y golang
 else
-    echo "uma das dependencias já está instalado."
+    echo "dependencia já está instalada."
 fi
 
-echo "=== Criando diretório do proxy ==="
-mkdir -p /opt/proxyeuro
-cd /opt/proxyeuro
+echo "=== instalando ou atualizando ==="
+INSTALL_DIR="/opt/proxyeuro
 
-echo "=== Baixando códigos fonte do Proxy ==="
-curl -sSL https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-worker.go -o proxy_worker.go
-curl -sSL https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-manager.go -o proxy_manager.go
+if [ -d "$INSTALL_DIR" ]; then
+    echo "Diretório já existe. Atualizando..."
+    cd "$INSTALL_DIR"
+    git pull
+else
+    git clone https://github.com/jeanfraga33/proxy-go2.git "$INSTALL_DIR"
+fi
 
 echo "=== Gerando certificados TLS autoassinados ==="
-openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 780 -nodes -subj "/CN=localhost"
+cd "$INSTALL_DIR"
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 700 -nodes -subj "/CN=localhost"
 
 echo "=== Compilando proxy ==="
 go build -o /usr/local/bin/proxyeuro proxy_manager.go
 
-echo "=== Limpando arquivos temporários ==="
-rm -f proxy_manager.go
-
 echo "=== Limpando cache DNS ==="
 systemd-resolve --flush-caches || resolvectl flush-caches || echo "Não foi possível limpar o cache DNS"
 
-echo "=== Instalado/Atualizado com sucesso! Use o comando 'proxyeuro' para iniciar ==="
-echo " Proxy verção 1.0 "
+echo "=== Instalação concluída com sucesso ==="
+echo "Use o comando 'proxyeuro' para iniciar"

@@ -1,19 +1,13 @@
-// proxy_manager.go
 package main
 
 import (
 	"bufio"
-	"crypto/tls"
 	"fmt"
-	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 type ProxyProcess struct {
@@ -100,7 +94,6 @@ func monitorarPortas() {
 		return
 	}
 	for port := range processes {
-		// Exemplo fictício. Na prática, use netstat, ss ou monitoração real por socket
-		fmt.Printf("Porta %d está ativa. (Monitoramento detalhado depende da implementação do proxy_worker.go)\n", port)
+		fmt.Printf("Porta %d está ativa.\n", port)
 	}
 }

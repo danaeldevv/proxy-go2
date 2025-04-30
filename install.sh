@@ -32,3 +32,4 @@ systemd-resolve --flush-caches || resolvectl flush-caches || echo "Não foi poss
 
 echo "=== Instalação concluída com sucesso ==="
 echo "Use o comando 'proxyeuro' para iniciar"
+echo " Proxy Verção 1.0"

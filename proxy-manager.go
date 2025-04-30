@@ -29,7 +29,7 @@ var (
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Println("\n==== MENU ====")
+		fmt.Println("\n==== MENU Proxy Euro ====")
 		fmt.Println("1. Abrir porta")
 		fmt.Println("2. Fechar porta")
 		fmt.Println("3. Monitorar portas abertas")

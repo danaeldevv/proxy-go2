@@ -10,7 +10,7 @@ else
 fi
 
 echo "=== instalando ou atualizando ==="
-INSTALL_DIR="/opt/proxyeuro
+INSTALL_DIR="/opt/proxyeuro"
 
 if [ -d "$INSTALL_DIR" ]; then
     echo "Diretório já existe. Atualizando..."

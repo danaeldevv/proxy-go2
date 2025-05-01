@@ -1,57 +1,42 @@
 #!/bin/bash
 set -e
 
-echo "=== Instalando dependências do sistema ==="
-apt update -y && apt install -y golang git openssl || {
-    echo "Erro ao instalar dependências."
-    exit 1
-}
+echo "=== Instalando dependências ==="
+apt update
+apt install -y golang git openssl
 
-echo "=== Criando diretório do proxy ==="
-INSTALL_DIR="/opt/proxyeuro"
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR" || exit 1
+echo "=== Removendo instalação anterior ==="
+rm -rf /opt/proxyeuro
 
-echo "=== Baixando arquivos do proxy ==="
-cat > proxy_manager.go << 'EOF'
-[COLE AQUI O CÓDIGO COMPLETO DO proxy_manager.go]
-EOF
+echo "=== Clonando repositório ==="
+git clone https://github.com/jeanfraga33/proxy-go2.git /opt/proxyeuro
 
-cat > proxy_worker.go << 'EOF'
-[COLE AQUI O CÓDIGO COMPLETO DO proxy_worker.go]
-EOF
-
-echo "=== Gerando certificados TLS autoassinados ==="
-if ! openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"; then
-    echo "Erro ao gerar certificado TLS."
-    exit 1
-fi
+echo "=== Gerando certificados TLS ==="
+cd /opt/proxyeuro
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 700 -nodes -subj "/CN=localhost"
 
 echo "=== Inicializando módulo Go ==="
-if [ ! -f go.mod ]; then
-    go mod init proxyeuro || {
-        echo "Erro ao inicializar go.mod"
-        exit 1
-    }
-fi
-
-echo "=== Resolvendo dependências ==="
-go mod tidy || {
-    echo "Erro ao rodar go mod tidy"
-    exit 1
-}
+go mod init proxyeuro || echo "go.mod já existe"
+go mod tidy
 
 echo "=== Compilando proxy_worker ==="
-if ! go build -o /usr/local/bin/proxy_worker proxy_worker.go; then
+if go build -o /usr/local/bin/proxy_worker proxy-worker.go; then
+    echo "proxy_worker compilado com sucesso"
+else
     echo "Erro ao compilar proxy_worker.go"
     exit 1
 fi
 
-echo "=== Compilando proxy_manager como proxyeuro ==="
-if ! go build -o /usr/local/bin/proxyeuro proxy_manager.go; then
-    echo "Erro ao compilar proxy_manager.go"
+echo "=== Compilando proxy_manager ==="
+if go build -o /usr/local/bin/proxyeuro proxy-manager.go; then
+    echo "proxy_manager compilado com sucesso"
+else
+    echo "Erro ao compilar proxy-manager.go"
     exit 1
 fi
 
-echo "=== Instalação concluída com sucesso! ==="
-echo "Use o comando: proxyeuro"
+echo "=== Limpando cache DNS ==="
+systemd-resolve --flush-caches || resolvectl flush-caches || echo "Não foi possível limpar o cache DNS"
+
+echo "=== Instalação concluída com sucesso ==="
+echo "Use o comando 'proxyeuro' para abrir o menu"

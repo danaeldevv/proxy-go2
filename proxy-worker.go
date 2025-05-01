@@ -1,5 +1,5 @@
 // proxy_worker.go
-package main
+package proxy
 
 import (
 	"crypto/tls"
@@ -11,19 +11,9 @@ import (
 	"sync"
 )
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("Uso: proxy_worker <porta>")
-		os.Exit(1)
-	}
-	port := os.Args[1]
-	startProxy(port)
-}
-
-func startProxy(port string) {
+func Start(port string) {
 	addr := ":" + port
 
-	// Carrega o certificado TLS
 	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
 	if err != nil {
 		log.Fatal("Erro carregando certificado TLS:", err)
@@ -55,14 +45,12 @@ func startProxy(port string) {
 func manipularConexao(client net.Conn) {
 	defer client.Close()
 
-	// Leitura inicial para detectar protocolo
 	head := make([]byte, 1024)
 	n, err := client.Read(head)
 	if err != nil {
 		log.Println("Erro lendo cabeçalho:", err)
 		return
 	}
-
 	data := head[:n]
 
 	if isHTTP101(data) || isHTTP200(data) || isWebSocket(data) {
@@ -74,7 +62,6 @@ func manipularConexao(client net.Conn) {
 		return
 	}
 
-	// Encaminhar para SSH local
 	sshConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
 		log.Println("Erro conectando ao SSH local:", err)
@@ -82,7 +69,7 @@ func manipularConexao(client net.Conn) {
 	}
 	defer sshConn.Close()
 
-	sshConn.Write(data) // envia o que já foi lido
+	sshConn.Write(data)
 	go io.Copy(sshConn, client)
 	io.Copy(client, sshConn)
 }

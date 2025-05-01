@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,11 +62,7 @@ func abrirPorta(port int) {
 		return
 	}
 
-	workerPath := filepath.Join("/opt/proxyeuro", "worker_bin")
-	cmd := exec.Command(workerPath, strconv.Itoa(port))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
+	cmd := exec.Command("go", "run", "worker/proxy_worker.go", strconv.Itoa(port))
 	err := cmd.Start()
 	if err != nil {
 		fmt.Println("Erro ao abrir porta:", err)

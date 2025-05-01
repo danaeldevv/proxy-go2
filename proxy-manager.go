@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 type ProxyProcess struct {
@@ -62,7 +63,9 @@ func abrirPorta(port int) {
 		return
 	}
 
-	cmd := exec.Command("go", "run", "worker/proxy_worker.go", strconv.Itoa(port))
+	cmd := exec.Command("/usr/local/bin/proxy_worker", strconv.Itoa(port))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
 	err := cmd.Start()
 	if err != nil {
 		fmt.Println("Erro ao abrir porta:", err)

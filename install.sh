@@ -3,29 +3,29 @@ set -e
 
 echo "=== Instalando dependências ==="
 apt update
-apt install -y golang git openssl wget
+apt install -y golang git openssl
 
 echo "=== Removendo instalação anterior ==="
 rm -rf /opt/proxyeuro
-mkdir -p /opt/proxyeuro
-cd /opt/proxyeuro
 
-echo "=== Baixando arquivos do proxy ==="
-wget -O proxy-manager.go https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-manager.go
-wget -O proxy-worker.go https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-worker.go
+echo "=== Clonando repositório oficial ==="
+git clone https://github.com/jeanfraga33/proxy-go2.git /opt/proxyeuro
 
 echo "=== Gerando certificados TLS ==="
+cd /opt/proxyeuro
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 700 -nodes -subj "/CN=localhost"
 
 echo "=== Inicializando módulo Go ==="
-go mod init proxyeuro || echo "go.mod já existe"
+if [ ! -f "go.mod" ]; then
+    go mod init proxyeuro
+fi
 go mod tidy
 
 echo "=== Compilando proxy_worker ==="
 if go build -o /usr/local/bin/proxy_worker proxy-worker.go; then
     echo "proxy_worker compilado com sucesso"
 else
-    echo "Erro ao compilar proxy_worker.go"
+    echo "Erro ao compilar proxy-worker.go"
     exit 1
 fi
 

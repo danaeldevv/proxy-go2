@@ -1,39 +1,35 @@
 #!/bin/bash
 set -e
 
-echo "=== Instalando dependências ==="
-apt update
-apt install -y golang git
+echo "=== Instalando dependências do sistema ==="
+apt update -y && apt install -y golang git
 
-echo "=== Instalando ou atualizando ==="
-INSTALL_DIR="/opt/proxyeuro"
+echo "=== Criando diretório /opt/proxyeuro ==="
+mkdir -p /opt/proxyeuro
+cd /opt/proxyeuro
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-    echo "Diretório já existe. Atualizando..."
-    cd "$INSTALL_DIR"
-    git pull
-else
-    echo "Clonando repositório..."
-    rm -rf "$INSTALL_DIR"
-    git clone https://github.com/jeanfraga33/proxy-go2.git "$INSTALL_DIR"
-fi
+echo "=== Baixando arquivos do proxy ==="
+# Salve os códigos abaixo como arquivos locais
+cat > proxy_manager.go << 'EOF'
+[CÓDIGO DO proxy_manager.go]
+EOF
 
-echo "=== Inicializando Go Modules ==="
-cd "$INSTALL_DIR"
-if [ ! -f "go.mod" ]; then
-    go mod init proxyeuro
-fi
-go mod tidy
+cat > proxy_worker.go << 'EOF'
+[CÓDIGO DO proxy_worker.go]
+EOF
 
 echo "=== Gerando certificados TLS autoassinados ==="
-openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 700 -nodes -subj "/CN=localhost"
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
 
-echo "=== Compilando proxy_manager ==="
-go build -o /usr/local/bin/proxyeuro
+echo "=== Inicializando módulo Go ==="
+go mod init proxyeuro
+go mod tidy
 
-echo "=== Limpando cache DNS ==="
-systemd-resolve --flush-caches || resolvectl flush-caches || echo "Não foi possível limpar o cache DNS"
+echo "=== Compilando proxy_worker ==="
+go build -o /usr/local/bin/proxy_worker proxy_worker.go
 
-echo "=== Instalação concluída com sucesso ==="
-echo "Use o comando 'proxyeuro' para iniciar"
-echo "Proxy Versão 1.0"
+echo "=== Compilando proxy_manager como proxyeuro ==="
+go build -o /usr/local/bin/proxyeuro proxy_manager.go
+
+echo "=== Instalação concluída com sucesso! ==="
+echo "Use o comando: proxyeuro"

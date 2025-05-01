@@ -20,7 +20,9 @@ fi
 
 echo "=== Inicializando Go Modules ==="
 cd "$INSTALL_DIR"
-go mod init proxyeuro
+if [ ! -f "go.mod" ]; then
+    go mod init proxyeuro
+fi
 go mod tidy
 
 echo "=== Gerando certificados TLS autoassinados ==="

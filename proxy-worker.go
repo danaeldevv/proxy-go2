@@ -1,4 +1,3 @@
-// proxy_worker.go
 package main
 
 import (
@@ -6,11 +5,21 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net" 
-	"sync"
+	"net"
+	"os"
+	"strings"
 )
 
-func Start(port string) {
+func main() {
+	if len(os.Args) != 2 {
+		fmt.Println("Uso: proxy_worker <porta>")
+		os.Exit(1)
+	}
+	port := os.Args[1]
+	startProxy(port)
+}
+
+func startProxy(port string) {
 	addr := ":" + port
 
 	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
@@ -26,18 +35,13 @@ func Start(port string) {
 	defer listener.Close()
 	fmt.Println("Proxy escutando em:", addr)
 
-	var wg sync.WaitGroup
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Println("Erro de conexão:", err)
 			continue
 		}
-		wg.Add(1)
-		go func(c net.Conn) {
-			defer wg.Done()
-			manipularConexao(c)
-		}(conn)
+		go manipularConexao(conn)
 	}
 }
 
@@ -50,6 +54,7 @@ func manipularConexao(client net.Conn) {
 		log.Println("Erro lendo cabeçalho:", err)
 		return
 	}
+
 	data := head[:n]
 
 	if isHTTP101(data) || isHTTP200(data) || isWebSocket(data) {
@@ -74,15 +79,15 @@ func manipularConexao(client net.Conn) {
 }
 
 func isHTTP101(data []byte) bool {
-	return string(data)[:15] == "HTTP/1.1 101 Swi"
+	return strings.HasPrefix(string(data), "HTTP/1.1 101")
 }
 
 func isHTTP200(data []byte) bool {
-	return string(data)[:15] == "HTTP/1.1 200 OK"
+	return strings.HasPrefix(string(data), "HTTP/1.1 200")
 }
 
 func isWebSocket(data []byte) bool {
-	return string(data)[:20] == "GET / HTTP/1.1\r\nHost:"
+	return strings.HasPrefix(string(data), "GET / HTTP/1.1")
 }
 
 func isSOCKS5(data []byte) bool {

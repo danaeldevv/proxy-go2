@@ -28,7 +28,7 @@ echo "=== Gerando certificados TLS autoassinados ==="
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 700 -nodes -subj "/CN=localhost"
 
 echo "=== Compilando proxy_manager ==="
-go build -o /usr/local/bin/proxyeuro proxy_manager.go
+go build -o /usr/local/bin/proxyeuro
 
 echo "=== Limpando cache DNS ==="
 systemd-resolve --flush-caches || resolvectl flush-caches || echo "Não foi possível limpar o cache DNS"

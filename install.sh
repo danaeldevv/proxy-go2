@@ -3,9 +3,9 @@ set -e
 
 echo "=== Instalando dependências ==="
 apt update
-apt install -y golang git openssl
+apt install -y golang git
 
-echo "=== Instalando ou atualizando código-fonte ==="
+echo "=== Instalando ou atualizando ==="
 INSTALL_DIR="/opt/proxyeuro"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -18,10 +18,9 @@ else
     git clone https://github.com/jeanfraga33/proxy-go2.git "$INSTALL_DIR"
 fi
 
+echo "=== Inicializando Go Modules ==="
 cd "$INSTALL_DIR"
-
-echo "=== Configurando módulo Go ==="
-go mod init proxyeuro || echo "Módulo já existe"
+go mod init proxyeuro
 go mod tidy
 
 echo "=== Gerando certificados TLS autoassinados ==="
@@ -35,4 +34,4 @@ systemd-resolve --flush-caches || resolvectl flush-caches || echo "Não foi poss
 
 echo "=== Instalação concluída com sucesso ==="
 echo "Use o comando 'proxyeuro' para iniciar"
-echo " Proxy Versão 1.0"
+echo "Proxy Versão 1.0"

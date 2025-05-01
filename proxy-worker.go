@@ -1,5 +1,5 @@
 // proxy_worker.go
-package proxy
+package main
 
 import (
 	"crypto/tls"

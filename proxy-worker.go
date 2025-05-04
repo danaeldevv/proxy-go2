@@ -1,26 +1,3 @@
-#!/bin/bash
-
-PORTA="$1"
-if [ -z "$PORTA" ]; then
-  echo "Uso: ./instalador.sh <porta>"
-  exit 1
-fi
-
-BIN_PATH="/usr/local/bin/proxy_worker"
-CERT_DIR="/etc/proxyeuro/$PORTA"
-
-# Cria diretório para os certificados
-mkdir -p "$CERT_DIR"
-cd "$CERT_DIR"
-
-# Gera os certificados TLS se não existirem
-if [ ! -f "cert.pem" ] || [ ! -f "key.pem" ]; then
-  openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
-    -subj "/CN=proxyeuro.local" -days 365
-fi
-
-# Compila o proxy_worker.go com suporte TLS/sem TLS na mesma porta
-cat > /tmp/proxy_worker.go <<'EOF'
 package main
 
 import (
@@ -43,7 +20,7 @@ func handleConnection(conn net.Conn, tlsConfig *tls.Config) {
 		return
 	}
 
-data := buffer[:n]
+	data := buffer[:n]
 
 	if isTLS(data) {
 		tlsConn := tls.Server(conn, tlsConfig)
@@ -143,31 +120,3 @@ func main() {
 		go handleConnection(conn, tlsConfig)
 	}
 }
-EOF
-
-go build -o "$BIN_PATH" /tmp/proxy_worker.go
-chmod +x "$BIN_PATH"
-
-# Cria serviço systemd
-SERVICE_PATH="/etc/systemd/system/proxyeuro@.service"
-if [ ! -f "$SERVICE_PATH" ]; then
-cat <<EOF > "$SERVICE_PATH"
-[Unit]
-Description=ProxyEuro na porta %%i
-After=network.target
-
-[Service]
-ExecStart=$BIN_PATH %%i
-Restart=always
-Environment=CERT_DIR=/etc/proxyeuro/%%i
-
-[Install]
-WantedBy=multi-user.target
-EOF
-fi
-
-systemctl daemon-reexec
-systemctl daemon-reload
-systemctl enable --now "proxyeuro@$PORTA.service"
-
-echo "✅ ProxyEuro iniciado na porta $PORTA com suporte TLS e sem TLS."

@@ -28,7 +28,6 @@ check_existing_installation() {
 # Instalar dependências
 install_dependencies() {
     echo "Instalando dependências..."
-    sudo apt update
     sudo apt install -y golang-go git build-essential
     echo "Dependências instaladas."
 }

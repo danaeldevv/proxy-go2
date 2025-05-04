@@ -1,4 +1,3 @@
-/// proxy-manager.go
 package main
 
 import (
@@ -9,40 +8,42 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 var (
-	mutex sync.Mutex
+	mutex     sync.Mutex
+	servicos  = make(map[int]bool)
+	clearCmd  = exec.Command("clear")
 )
 
 func clearScreen() {
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	cmd.Run()
+	clearCmd.Stdout = os.Stdout
+	clearCmd.Run()
 }
 
-func centerText(text string) string {
-	cols := 60
-	pad := (cols - len(text)) / 2
-	if pad < 0 {
-		pad = 0
+func centerText(text string, width int) string {
+	padding := (width - len(text)) / 2
+	if padding < 0 {
+		padding = 0
 	}
-	return strings.Repeat(" ", pad) + text
+	return strings.Repeat(" ", padding) + text
 }
 
-func menu() {
+func printMenu() {
+	clearScreen()
+	width := 50
+	fmt.Println(centerText("==== MENU PROXY EURO ====", width))
+	fmt.Println(centerText("1. Abrir porta", width))
+	fmt.Println(centerText("2. Fechar porta", width))
+	fmt.Println(centerText("3. Monitorar portas abertas", width))
+	fmt.Println(centerText("4. Sair", width))
+	fmt.Print("\nEscolha: ")
+}
+
+func main() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		clearScreen()
-		fmt.Println(centerText("=============================="))
-		fmt.Println(centerText("      MENU Proxy Euro      "))
-		fmt.Println(centerText("=============================="))
-		fmt.Println(centerText("1. Abrir porta"))
-		fmt.Println(centerText("2. Fechar porta"))
-		fmt.Println(centerText("3. Monitorar portas abertas"))
-		fmt.Println(centerText("4. Sair"))
-		fmt.Print("\nEscolha: ")
+		printMenu()
 		opt, _ := reader.ReadString('\n')
 		opt = strings.TrimSpace(opt)
 
@@ -59,12 +60,13 @@ func menu() {
 			fecharPorta(port)
 		case "3":
 			monitorarPortas()
+			fmt.Print("\nPressione Enter para voltar ao menu...")
+			reader.ReadString('\n')
 		case "4":
 			fmt.Println("Encerrando...")
 			return
 		default:
 			fmt.Println("Opção inválida.")
-			time.Sleep(2 * time.Second)
 		}
 	}
 }
@@ -73,74 +75,81 @@ func abrirPorta(port int) {
 	mutex.Lock()
 	defer mutex.Unlock()
 
-	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
-	serviceFile := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
-	
-	if _, err := os.Stat(serviceFile); err == nil {
-		fmt.Println("Porta já está aberta (serviço existente)")
-		time.Sleep(2 * time.Second)
+	if servicos[port] {
+		fmt.Println("Porta já está em uso.")
 		return
 	}
 
-	script := fmt.Sprintf(`[Unit]
-Description=Proxy Euro Porta %d
+	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
+
+	cmd := exec.Command("systemctl", "daemon-reexec")
+	cmd.Run()
+
+	serviceContent := fmt.Sprintf(`[Unit]
+Description=ProxyEuro na porta %d
 After=network.target
 
 [Service]
+Type=simple
 ExecStart=/usr/local/bin/proxy_worker %d
 Restart=always
 
 [Install]
-WantedBy=multi-user.target`, port, port)
+WantedBy=multi-user.target
+`, port, port)
 
-	err := os.WriteFile(serviceFile, []byte(script), 0644)
+	servicePath := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
+	err := os.WriteFile(servicePath, []byte(serviceContent), 0644)
 	if err != nil {
-		fmt.Println("Erro ao criar service:", err)
+		fmt.Println("Erro ao criar arquivo do serviço:", err)
 		return
 	}
 
-	exec.Command("systemctl", "daemon-reexec").Run()
 	exec.Command("systemctl", "daemon-reload").Run()
 	exec.Command("systemctl", "enable", serviceName).Run()
-	exec.Command("systemctl", "start", serviceName).Run()
+	err = exec.Command("systemctl", "start", serviceName).Run()
+	if err != nil {
+		fmt.Println("Erro ao iniciar o serviço:", err)
+		return
+	}
 
-	fmt.Printf("Porta %d aberta via systemd!\n", port)
-	time.Sleep(2 * time.Second)
+	servicos[port] = true
+	fmt.Printf("Porta %d aberta e serviço %s iniciado.\n", port, serviceName)
 }
 
 func fecharPorta(port int) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
-	serviceFile := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
 
+	if !servicos[port] {
+		fmt.Println("Porta não está ativa.")
+		return
+	}
+
+	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
 	exec.Command("systemctl", "stop", serviceName).Run()
 	exec.Command("systemctl", "disable", serviceName).Run()
-	os.Remove(serviceFile)
+	err := os.Remove(fmt.Sprintf("/etc/systemd/system/%s", serviceName))
+	if err != nil {
+		fmt.Println("Erro ao remover serviço:", err)
+	}
+
 	exec.Command("systemctl", "daemon-reload").Run()
-	fmt.Printf("Porta %d fechada e serviço removido.\n", port)
-	time.Sleep(2 * time.Second)
+	delete(servicos, port)
+	fmt.Printf("Porta %d fechada e serviço %s removido.\n", port, serviceName)
 }
 
 func monitorarPortas() {
 	mutex.Lock()
 	defer mutex.Unlock()
-	fmt.Println("Portas abertas:")
-	out, err := exec.Command("systemctl", "list-units", "--type=service", "--state=running").Output()
-	if err != nil {
-		fmt.Println("Erro ao listar serviços.")
-	} else {
-		lines := strings.Split(string(out), "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "proxyeuro@") {
-				fmt.Println(line)
-			}
-		}
-	}
-	fmt.Print("Pressione ENTER para voltar...")
-	bufio.NewReader(os.Stdin).ReadBytes('\n')
-}
 
-func main() {
-	menu()
+	if len(servicos) == 0 {
+		fmt.Println("Nenhuma porta está ativa.")
+		return
+	}
+
+	fmt.Println("\nPortas ativas:")
+	for port := range servicos {
+		fmt.Printf("- Porta %d (serviço: proxyeuro@%d.service)\n", port, port)
+	}
 }

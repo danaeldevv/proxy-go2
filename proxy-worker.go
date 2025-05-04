@@ -1,57 +1,95 @@
-#!/bin/bash
-set -e
+package main
 
-echo "=== Instalando dependências ==="
-apt update -y && apt install -y golang git openssl || {
-    echo "Erro ao instalar dependências."
-    exit 1
+import (
+	"crypto/tls"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"os"
+	"strings"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		fmt.Println("Uso: proxy_worker <porta>")
+		os.Exit(1)
+	}
+	port := os.Args[1]
+	startProxy(port)
 }
 
-INSTALL_DIR="/opt/proxyeuro"
-REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
+func startProxy(port string) {
+	addr := ":" + port
 
-echo "=== Clonando ou atualizando repositório ==="
-if [ -d "$INSTALL_DIR/.git" ]; then
-    cd "$INSTALL_DIR"
-    git pull || { echo "Erro ao atualizar repositório"; exit 1; }
-else
-    rm -rf "$INSTALL_DIR"
-    git clone "$REPO_URL" "$INSTALL_DIR" || { echo "Erro ao clonar repositório"; exit 1; }
-fi
+	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
+	if err != nil {
+		log.Fatal("Erro carregando certificado TLS:", err)
+	}
 
-cd "$INSTALL_DIR" || exit 1
+	config := &tls.Config{Certificates: []tls.Certificate{cert}}
+	listener, err := tls.Listen("tcp", addr, config)
+	if err != nil {
+		log.Fatal("Erro ao escutar porta:", err)
+	}
+	defer listener.Close()
+	fmt.Println("Proxy escutando em:", addr)
 
-echo "=== Gerando certificados TLS autoassinados ==="
-openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost" || {
-    echo "Erro ao gerar certificados."
-    exit 1
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Println("Erro de conexão:", err)
+			continue
+		}
+		go manipularConexao(conn)
+	}
 }
 
-echo "=== Inicializando módulo Go ==="
-if [ ! -f go.mod ]; then
-    go mod init proxyeuro || {
-        echo "Erro ao iniciar módulo Go."
-        exit 1
-    }
-fi
+func manipularConexao(client net.Conn) {
+	defer client.Close()
 
-echo "=== Rodando go mod tidy ==="
-go mod tidy || {
-    echo "Erro ao executar go mod tidy"
-    exit 1
+	head := make([]byte, 1024)
+	n, err := client.Read(head)
+	if err != nil {
+		log.Println("Erro lendo cabeçalho:", err)
+		return
+	}
+
+	data := head[:n]
+
+	if isHTTP101(data) || isHTTP200(data) || isWebSocket(data) {
+		log.Println("Conexão HTTP/WebSocket detectada")
+	} else if isSOCKS5(data) {
+		log.Println("Conexão SOCKS5 detectada")
+	} else {
+		log.Println("Protocolo desconhecido")
+		return
+	}
+
+	sshConn, err := net.Dial("tcp", "127.0.0.1:22")
+	if err != nil {
+		log.Println("Erro conectando ao SSH local:", err)
+		return
+	}
+	defer sshConn.Close()
+
+	sshConn.Write(data)
+	go io.Copy(sshConn, client)
+	io.Copy(client, sshConn)
 }
 
-echo "=== Compilando proxy_worker ==="
-go build -o /usr/local/bin/proxy_worker proxy-worker.go || {
-    echo "Erro ao compilar proxy_worker.go"
-    exit 1
+func isHTTP101(data []byte) bool {
+	return strings.HasPrefix(string(data), "HTTP/1.1 101")
 }
 
-echo "=== Compilando proxy_manager como proxyeuro ==="
-go build -o /usr/local/bin/proxyeuro proxy-manager.go || {
-    echo "Erro ao compilar proxy_manager.go"
-    exit 1
+func isHTTP200(data []byte) bool {
+	return strings.HasPrefix(string(data), "HTTP/1.1 200")
 }
 
-echo "=== Instalação concluída com sucesso ==="
-echo "Use o comando: proxyeuro"
+func isWebSocket(data []byte) bool {
+	return strings.HasPrefix(string(data), "GET / HTTP/1.1")
+}
+
+func isSOCKS5(data []byte) bool {
+	return len(data) > 0 && data[0] == 0x05
+}

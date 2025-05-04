@@ -60,6 +60,16 @@ create_symlink() {
     echo "Link simbólico criado. Agora você pode usar o comando 'proxyeuro'."
 }
 
+# Exibir instrução para abrir o proxy
+show_instructions() {
+    echo "Instalação concluída com sucesso!"
+    echo "Para abrir o proxy, use o comando:"
+    echo "proxyeuro"
+    echo "Você pode iniciar o proxy para uma porta específica com o comando:"
+    echo "proxyeuro [PORTA]"
+    echo "Exemplo: proxyeuro 8080"
+}
+
 # Função principal
 main() {
     # Passo 1: Verificar e remover instalação anterior
@@ -80,7 +90,8 @@ main() {
     # Passo 6: Limpar tabela DNS
     clean_dns_cache
 
-    echo "Instalação concluída com sucesso!"
+    # Passo 7: Mostrar instruções para abrir o proxy
+    show_instructions
 }
 
 # Executar o script

@@ -1,3 +1,4 @@
+/// proxy-manager.go
 package main
 
 import (
@@ -8,28 +9,40 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
+	"time"
 )
-
-type ProxyProcess struct {
-	Port int
-	Cmd  *exec.Cmd
-}
 
 var (
-	processes = make(map[int]*ProxyProcess)
-	mutex     sync.Mutex
+	mutex sync.Mutex
 )
 
-func main() {
+func clearScreen() {
+	cmd := exec.Command("clear")
+	cmd.Stdout = os.Stdout
+	cmd.Run()
+}
+
+func centerText(text string) string {
+	cols := 60
+	pad := (cols - len(text)) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad) + text
+}
+
+func menu() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Println("\n==== MENU Proxy Euro ====")
-		fmt.Println("1. Abrir porta")
-		fmt.Println("2. Fechar porta")
-		fmt.Println("3. Monitorar portas abertas")
-		fmt.Println("4. Sair")
-		fmt.Print("Escolha: ")
+		clearScreen()
+		fmt.Println(centerText("=============================="))
+		fmt.Println(centerText("      MENU Proxy Euro      "))
+		fmt.Println(centerText("=============================="))
+		fmt.Println(centerText("1. Abrir porta"))
+		fmt.Println(centerText("2. Fechar porta"))
+		fmt.Println(centerText("3. Monitorar portas abertas"))
+		fmt.Println(centerText("4. Sair"))
+		fmt.Print("\nEscolha: ")
 		opt, _ := reader.ReadString('\n')
 		opt = strings.TrimSpace(opt)
 
@@ -51,6 +64,7 @@ func main() {
 			return
 		default:
 			fmt.Println("Opção inválida.")
+			time.Sleep(2 * time.Second)
 		}
 	}
 }
@@ -58,45 +72,75 @@ func main() {
 func abrirPorta(port int) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	if _, exists := processes[port]; exists {
-		fmt.Println("Porta já está aberta")
+
+	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
+	serviceFile := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
+	
+	if _, err := os.Stat(serviceFile); err == nil {
+		fmt.Println("Porta já está aberta (serviço existente)")
+		time.Sleep(2 * time.Second)
 		return
 	}
 
-	cmd := exec.Command("/usr/local/bin/proxy_worker", strconv.Itoa(port))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	script := fmt.Sprintf(`[Unit]
+Description=Proxy Euro Porta %d
+After=network.target
 
-	err := cmd.Start()
+[Service]
+ExecStart=/usr/local/bin/proxy_worker %d
+Restart=always
+
+[Install]
+WantedBy=multi-user.target`, port, port)
+
+	err := os.WriteFile(serviceFile, []byte(script), 0644)
 	if err != nil {
-		fmt.Println("Erro ao abrir porta:", err)
+		fmt.Println("Erro ao criar service:", err)
 		return
 	}
 
-	processes[port] = &ProxyProcess{Port: port, Cmd: cmd}
-	fmt.Println("Porta", port, "aberta com PID", cmd.Process.Pid)
+	exec.Command("systemctl", "daemon-reexec").Run()
+	exec.Command("systemctl", "daemon-reload").Run()
+	exec.Command("systemctl", "enable", serviceName).Run()
+	exec.Command("systemctl", "start", serviceName).Run()
+
+	fmt.Printf("Porta %d aberta via systemd!\n", port)
+	time.Sleep(2 * time.Second)
 }
 
 func fecharPorta(port int) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	proc, exists := processes[port]
-	if !exists {
-		fmt.Println("Porta não encontrada.")
-		return
-	}
-	proc.Cmd.Process.Kill()
-	delete(processes, port)
-	fmt.Println("Porta", port, "fechada.")
+	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
+	serviceFile := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
+
+	exec.Command("systemctl", "stop", serviceName).Run()
+	exec.Command("systemctl", "disable", serviceName).Run()
+	os.Remove(serviceFile)
+	exec.Command("systemctl", "daemon-reload").Run()
+	fmt.Printf("Porta %d fechada e serviço removido.\n", port)
+	time.Sleep(2 * time.Second)
 }
 
 func monitorarPortas() {
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(processes) == 0 {
-		fmt.Println("Nenhuma porta aberta.")
-		return
+	fmt.Println("Portas abertas:")
+	out, err := exec.Command("systemctl", "list-units", "--type=service", "--state=running").Output()
+	if err != nil {
+		fmt.Println("Erro ao listar serviços.")
+	} else {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "proxyeuro@") {
+				fmt.Println(line)
+			}
+		}
 	}
-	for port := range processes {
-		fmt.Printf("Porta %d está ativa.\n", port)
-	}
+	fmt.Print("Pressione ENTER para voltar...")
+	bufio.NewReader(os.Stdin).ReadBytes('\n')
+}
+
+func main() {
+	menu()
 }

@@ -1,3 +1,4 @@
+// proxy-worker.go atualizado
 package main
 
 import (
@@ -6,77 +7,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 )
-
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("Uso: proxy_worker <porta>")
-		os.Exit(1)
-	}
-	port := os.Args[1]
-	startProxy(port)
-}
-
-func startProxy(port string) {
-	addr := ":" + port
-
-	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
-	if err != nil {
-		log.Fatal("Erro carregando certificado TLS:", err)
-	}
-
-	config := &tls.Config{Certificates: []tls.Certificate{cert}}
-	listener, err := tls.Listen("tcp", addr, config)
-	if err != nil {
-		log.Fatal("Erro ao escutar porta:", err)
-	}
-	defer listener.Close()
-	fmt.Println("Proxy escutando em:", addr)
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println("Erro de conexão:", err)
-			continue
-		}
-		go manipularConexao(conn)
-	}
-}
-
-func manipularConexao(client net.Conn) {
-	defer client.Close()
-
-	head := make([]byte, 1024)
-	n, err := client.Read(head)
-	if err != nil {
-		log.Println("Erro lendo cabeçalho:", err)
-		return
-	}
-
-	data := head[:n]
-
-	if isHTTP101(data) || isHTTP200(data) || isWebSocket(data) {
-		log.Println("Conexão HTTP/WebSocket detectada")
-	} else if isSOCKS5(data) {
-		log.Println("Conexão SOCKS5 detectada")
-	} else {
-		log.Println("Protocolo desconhecido")
-		return
-	}
-
-	sshConn, err := net.Dial("tcp", "127.0.0.1:22")
-	if err != nil {
-		log.Println("Erro conectando ao SSH local:", err)
-		return
-	}
-	defer sshConn.Close()
-
-	sshConn.Write(data)
-	go io.Copy(sshConn, client)
-	io.Copy(client, sshConn)
-}
 
 func isHTTP101(data []byte) bool {
 	return strings.HasPrefix(string(data), "HTTP/1.1 101")
@@ -92,4 +26,91 @@ func isWebSocket(data []byte) bool {
 
 func isSOCKS5(data []byte) bool {
 	return len(data) > 0 && data[0] == 0x05
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		log.Println("Erro ao ler dados iniciais:", err)
+		return
+	}
+	data := buf[:n]
+
+	switch {
+	case isSOCKS5(data):
+		log.Println("Conexão SOCKS5 detectada")
+		handleSOCKS5(conn, data)
+	case isWebSocket(data):
+		log.Println("Conexão WebSocket detectada")
+		handleWebSocket(conn, data)
+	case isHTTP101(data) || isHTTP200(data):
+		log.Println("Conexão HTTP detectada")
+		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nProxyEuro HTTP ativo\n"))
+	default:
+		log.Println("Protocolo desconhecido")
+		conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nProtocolo não suportado\n"))
+	}
+}
+
+func handleSOCKS5(conn net.Conn, data []byte) {
+	conn.Write([]byte{0x05, 0x00}) // resposta para método no-auth
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil || n < 7 {
+		return
+	}
+	// Apenas responde como se conectasse com sucesso
+	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x16})
+}
+
+func handleWebSocket(conn net.Conn, data []byte) {
+	sshConn, err := net.Dial("tcp", "127.0.0.1:22")
+	if err != nil {
+		log.Println("Erro ao conectar ao SSH:", err)
+		return
+	}
+	defer sshConn.Close()
+
+	sshConn.Write(data)
+	go io.Copy(sshConn, conn)
+	io.Copy(conn, sshConn)
+}
+
+func main() {
+	if len(os.Args) != 2 {
+		log.Fatalf("Uso: %s <porta>", os.Args[0])
+	}
+	porta := os.Args[1]
+
+	certDir := os.Getenv("CERT_DIR")
+	if certDir == "" {
+		certDir = "/opt/proxyeuro/certs"
+	}
+	certPath := certDir + "/cert.pem"
+	keyPath := certDir + "/key.pem"
+
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		log.Fatalf("Erro carregando certificado TLS: %v", err)
+	}
+
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	listener, err := tls.Listen("tcp", ":"+porta, tlsConfig)
+	if err != nil {
+		log.Fatalf("Erro ao escutar na porta %s: %v", porta, err)
+	}
+	defer listener.Close()
+
+	log.Printf("ProxyEuro escutando na porta %s...", porta)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Println("Erro ao aceitar conexão:", err)
+			continue
+		}
+		go handleConnection(conn)
+	}
 }

@@ -39,7 +39,7 @@ install_proxy() {
     cd "$INSTALL_DIR" || exit
 
     echo "Compilando o proxy..."
-    go build -o "$PROXY_DIR" ./proxy-worker.go
+    go build -o "$PROXY_DIR" ./proxy-manager.go
     sudo chmod +x "$PROXY_DIR"
     echo "Proxy compilado e instalado."
 }

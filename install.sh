@@ -1,72 +1,67 @@
 #!/bin/bash
 
-# Verificar se é root
+# Verificar root
 if [ "$(id -u)" != "0" ]; then
-    echo "Este script deve ser executado como root" 1>&2
+    echo "Execute como root: sudo ./install_proxyeuro.sh"
     exit 1
 fi
 
-# Verificar sistema compatível
-supported=false
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    case "$ID" in
-        ubuntu)
-            case "$VERSION_ID" in
-                18.04|20.04|22.04|24.04) supported=true ;;
-            esac
-            ;;
-        debian)
-            case "$VERSION_ID" in
-                8|9|10|11|12) supported=true ;;
-            esac
-            ;;
-    esac
-fi
+# Verificar sistema
+OS_ID=$(grep -oP '(?<=^ID=).+' /etc/os-release | tr -d '"')
+OS_VERSION=$(grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"')
 
-if [ "$supported" != "true" ]; then
-    echo "Sistema não suportado"
+VALID_OS=false
+case "$OS_ID" in
+    ubuntu)
+        [[ "$OS_VERSION" =~ ^(18.04|20.04|22.04|24.04)$ ]] && VALID_OS=true
+        ;;
+    debian)
+        [[ "$OS_VERSION" =~ ^(8|9|10|11|12)$ ]] && VALID_OS=true
+        ;;
+esac
+
+if ! $VALID_OS; then
+    echo "Sistema não suportado!"
     exit 1
 fi
 
-# Remover instalação anterior
+# Limpeza anterior
 echo "Removendo instalações anteriores..."
-systemctl stop proxyeuro@* >/dev/null 2>&1
-systemctl disable proxyeuro@* >/dev/null 2>&1
-rm -rf /usr/local/bin/proxyeuro
-rm -rf /usr/local/bin/proxy_worker
+systemctl stop proxyeuro@* 2>/dev/null
+systemctl disable proxyeuro@* 2>/dev/null
+rm -rf /usr/local/bin/proxyeuro /usr/local/bin/proxy_worker
 rm -f /etc/systemd/system/proxyeuro@.service
-rm -rf /etc/proxyeuro
 systemctl daemon-reload
 
 # Instalar dependências
 echo "Instalando dependências..."
 apt-get install -y golang git openssl
 
-# Baixar e construir o aplicativo
-echo "Baixando e construindo o proxy..."
-temp_dir=$(mktemp -d)
-cd "$temp_dir"
+# Clonar e compilar
+TMP_DIR=$(mktemp -d)
+cd "$TMP_DIR"
 
+echo "Clonando repositório..."
 git clone https://github.com/jeanfraga33/proxy-go2.git
 cd proxy-go2
 
 # Corrigir nome do arquivo se necessário
-if [ -f "proxy-manager.go" ]; then
-    mv "proxy-manager.go" "proxy_manager.go"
+[[ -f "proxy-manager.go" ]] && mv "proxy-manager.go" "proxyeuro.go"
+
+echo "Compilando aplicação..."
+go build -o proxyeuro proxyeuro.go
+
+if [ ! -f "proxyeuro" ]; then
+    echo "Erro na compilação! Verifique as dependências Go."
+    exit 1
 fi
 
-go build -o proxyeuro proxy_manager.go
-
-# Instalar binários
+# Instalar
 echo "Instalando binários..."
 mv proxyeuro /usr/local/bin/
 chmod +x /usr/local/bin/proxyeuro
 
-# Criar diretório de certificados
-mkdir -p /etc/proxyeuro
-
-# Criar arquivo de serviço
+# Configurar systemd
 echo "Configurando serviços..."
 cat > /etc/systemd/system/proxyeuro@.service <<EOF
 [Unit]
@@ -85,13 +80,10 @@ EOF
 # Recarregar systemd
 systemctl daemon-reload
 
-# Limpar cache DNS
-echo "Limpando cache DNS..."
-resolvectl flush-caches >/dev/null 2>&1 || systemctl restart systemd-resolved >/dev/null 2>&1
-
-# Limpar arquivos temporários
-echo "Limpando arquivos temporários..."
-rm -rf "$temp_dir"
+# Limpar
+echo "Limpando cache..."
+rm -rf "$TMP_DIR"
+resolvectl flush-caches 2>/dev/null || systemctl restart systemd-resolved 2>/dev/null
 
 echo "Instalação concluída!"
-echo "Use o comando 'proxyeuro' para iniciar o gerenciador de proxy"
+echo "Para usar: proxyeuro <porta>"

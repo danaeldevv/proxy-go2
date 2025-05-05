@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -14,8 +15,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"crypto/tls"
 )
 
 const (
@@ -42,7 +41,6 @@ func logMessage(msg string) {
 	fmt.Fprintf(f, "[%s] %s\n", timestamp, msg)
 }
 
-// peekConn allows putting back one byte into the stream (it will be read first by Read calls)
 type peekConn struct {
 	net.Conn
 	peeked []byte
@@ -57,16 +55,12 @@ func (p *peekConn) Read(b []byte) (int, error) {
 	return p.Conn.Read(b)
 }
 
-// handleConn manages incoming connections on one port - multiplex WebSocket (WS/WSS), SOCKS5 on same port.
-// Sends required HTTP responses (101 upgrade for WS, 200 for SOCKS5).
-// Redirects connection bidirectionally to localhost:22 SSH.
 func handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	clientConn := conn
 	isTLS := false
 
-	// Detect TLS by peeking first byte
 	peek := make([]byte, 1)
 	n, err := clientConn.Read(peek)
 	if err != nil {
@@ -75,7 +69,6 @@ func handleConn(conn net.Conn) {
 	}
 
 	if n == 1 && peek[0] == 0x16 && sslConfig != nil {
-		// TLS detected, do handshake
 		tlsConn := tls.Server(&peekConn{Conn: clientConn, peeked: peek}, sslConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			logMessage(fmt.Sprintf("Erro handshake TLS: %v", err))
@@ -84,28 +77,27 @@ func handleConn(conn net.Conn) {
 		clientConn = tlsConn
 		isTLS = true
 	} else {
-		// Not TLS, restore byte to stream
 		clientConn = &peekConn{Conn: clientConn, peeked: peek}
 	}
 
 	reader := bufio.NewReader(clientConn)
 
-	// Read first line or byte for protocol detection
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		logMessage(fmt.Sprintf("Erro lendo primeira linha: %v", err))
+		// Mesmo em erro tentamos redirecionar para SSH porque usuário quer qualquer conexão
+		sshRedirect(clientConn)
 		return
 	}
 	line = strings.TrimSpace(line)
 
 	if strings.HasPrefix(line, "GET") || strings.HasPrefix(line, "CONNECT") {
-		// HTTP/WebSocket, parse headers to confirm WebSocket upgrade
 		headers := make(map[string]string)
 		for {
 			hline, err := reader.ReadString('\n')
 			if err != nil {
 				logMessage(fmt.Sprintf("Erro lendo headers: %v", err))
-				return
+				break // não encerra conexão pra continuar proxy
 			}
 			hline = strings.TrimSpace(hline)
 			if hline == "" {
@@ -117,7 +109,6 @@ func handleConn(conn net.Conn) {
 			}
 		}
 		if strings.ToLower(headers["upgrade"]) == "websocket" {
-			// Upgrade to websocket
 			resp := "HTTP/1.1 101 Proxy Cloud JF\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 			if _, err := clientConn.Write([]byte(resp)); err != nil {
 				logMessage("Erro enviando resposta 101 websocket: " + err.Error())
@@ -127,17 +118,15 @@ func handleConn(conn net.Conn) {
 			sshRedirect(clientConn)
 			return
 		} else {
-			// Non websocket http request, respond 200 OK
 			resp := "HTTP/1.1 200 Proxy Cloud JF\r\n\r\n"
 			if _, err := clientConn.Write([]byte(resp)); err != nil {
 				logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
 			}
-			logMessage("Requisição HTTP normal com resposta 200 enviada. Fechando conexão.")
+			logMessage("HTTP normal identificado, resposta 200 enviada")
+			sshRedirect(clientConn)
 			return
 		}
-
 	} else if line == "\x05" {
-		// SOCKS5 connection (first byte 0x05)
 		resp := "HTTP/1.1 200 Proxy Cloud JF\r\n\r\n"
 		if _, err := clientConn.Write([]byte(resp)); err != nil {
 			logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
@@ -147,14 +136,17 @@ func handleConn(conn net.Conn) {
 		sshRedirect(clientConn)
 		return
 	} else {
-		// Indefinido, responder 200 para matar conexão educadamente
+		// Nenhum protocolo reconhecido, mas redireciona para SSH conforme pedido
 		resp := "HTTP/1.1 200 Proxy Cloud JF\r\n\r\n"
-		clientConn.Write([]byte(resp))
-		logMessage("Conexão recebida com protocolo desconhecido, respondeu 200 e fechou")
+		if _, err := clientConn.Write([]byte(resp)); err != nil {
+			logMessage("Erro enviando resposta 200 padrão: " + err.Error())
+		}
+		logMessage("Protocolo desconhecido, respondeu 200 e redirecionando para SSH")
+		sshRedirect(clientConn)
 	}
 }
 
-// sshRedirect conecta na porta 22 local e encaminha dados bidirecionalmente.
+// sshRedirect forward client <-> SSH listening on 127.0.0.1:22
 func sshRedirect(clientConn net.Conn) {
 	sshConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
@@ -165,24 +157,19 @@ func sshRedirect(clientConn net.Conn) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-
-	// Copy client->ssh
 	go func() {
 		defer wg.Done()
 		io.Copy(sshConn, clientConn)
 	}()
-
-	// Copy ssh->client
 	go func() {
 		defer wg.Done()
 		io.Copy(clientConn, sshConn)
 	}()
-
 	wg.Wait()
+
 	logMessage("Conexão proxy finalizada")
 }
 
-// startProxy inicia listener TCP e aceita conexões tratadas em goroutine
 func startProxy(port int) {
 	addr := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", addr)
@@ -192,7 +179,6 @@ func startProxy(port int) {
 	}
 	defer listener.Close()
 
-	// Escrever PID para controle
 	pidFile := fmt.Sprintf("%s/proxyeuro_%d.pid", pidFileDir, port)
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
 		logMessage(fmt.Sprintf("Falha ao gravar PID file: %v", err))
@@ -200,7 +186,6 @@ func startProxy(port int) {
 
 	logMessage(fmt.Sprintf("Proxy iniciado na porta %d", port))
 
-	// Captura de sinais para desligar proxy corretamente
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -214,7 +199,6 @@ func startProxy(port int) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			// listener aceitando conexões, se erro fechar, encerra loop.
 			logMessage(fmt.Sprintf("Erro aceitando conexão na porta %d: %v", port, err))
 			break
 		}
@@ -224,12 +208,10 @@ func startProxy(port int) {
 	os.Remove(pidFile)
 }
 
-// systemdServicePath retorna o path do serviço systemd para a porta
 func systemdServicePath(port int) string {
 	return fmt.Sprintf("%s/proxyeuro@%d.service", serviceDir, port)
 }
 
-// createSystemdService cria arquivo de serviço systemd para a porta
 func createSystemdService(port int, execPath string) error {
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=ProxyEuro na porta %d
@@ -244,12 +226,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 `, port, execPath, port)
-
 	path := systemdServicePath(port)
 	return os.WriteFile(path, []byte(serviceContent), 0644)
 }
 
-// enableAndStartService habilita e inicia serviço systemd
 func enableAndStartService(port int) error {
 	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
 	cmd := exec.Command("systemctl", "daemon-reload")
@@ -264,43 +244,36 @@ func enableAndStartService(port int) error {
 	return cmd.Run()
 }
 
-// stopAndDisableService para e desabilita o serviço systemd da porta
 func stopAndDisableService(port int) error {
 	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
 	cmd := exec.Command("systemctl", "stop", serviceName)
-	cmd.Run() // Ignorar erro para continuar
+	cmd.Run()
 	cmd = exec.Command("systemctl", "disable", serviceName)
 	cmd.Run()
 	return os.Remove(systemdServicePath(port))
 }
 
-// clearScreen limpa terminal para todos OSs suportados simples
 func clearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
 
 func main() {
 	if len(os.Args) > 1 {
-		// Se argumento for número, executa proxy na porta - para execução via systemd
 		port, err := strconv.Atoi(os.Args[1])
 		if err != nil {
 			fmt.Printf("Parâmetro inválido: %s\n", os.Args[1])
 			return
 		}
-
-		// Configurar TLS se possível (carregar cert.pem/key.pem na pasta)
 		cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
 		if err == nil {
 			sslConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 		} else {
 			logMessage("Certificados TLS não carregados, executando sem TLS")
 		}
-
 		startProxy(port)
 		return
 	}
 
-	// Menu de interação para abrir/fechar portas e sair
 	execPath, _ := os.Executable()
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -334,7 +307,6 @@ func main() {
 				scanner.Scan()
 				continue
 			}
-			// Criar service systemd e iniciar
 			if err := createSystemdService(port, execPath); err != nil {
 				fmt.Println("Erro criando service: ", err)
 				fmt.Print("Pressione Enter...")
@@ -350,7 +322,6 @@ func main() {
 			fmt.Printf("✅ Proxy iniciado na porta %d\n", port)
 			fmt.Println("Executando em background via systemd. Pressione Enter...")
 			scanner.Scan()
-
 		case "2":
 			clearScreen()
 			fmt.Print("Digite a porta a ser fechada: ")
@@ -380,12 +351,10 @@ func main() {
 			}
 			fmt.Print("Pressione Enter...")
 			scanner.Scan()
-
 		case "3":
 			clearScreen()
 			fmt.Println("👋 Saindo do menu. Os proxies ativos continuam em execução.")
 			return
-
 		default:
 			fmt.Println("❌ Opção inválida! Pressione Enter...")
 			scanner.Scan()

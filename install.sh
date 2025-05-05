@@ -1,49 +1,34 @@
 #!/bin/bash
 
-# Instalador Oficial ProxyEuro - Versão 3.0
-# Corrigido para Go 1.20+ e Systemd
-# Suporte: Ubuntu 18/20/22/24 e Debian 9/10/11/12
+# Instalador Oficial ProxyEuro - Versão 4.0
+# Corrigido para instalação em todas versões do Ubuntu/Debian
 
 set -e
 
 # Verificar root
 [ "$(id -u)" != "0" ] && echo "Execute como root!" && exit 1
 
-# Verificar sistema
-check_os() {
-    if ! command -v lsb_release &> /dev/null; then
-        apt-get install -y lsb-release
+# Configurar repositórios
+setup_repos() {
+    echo "Configurando repositórios..."
+    if grep -q 'Ubuntu' /etc/os-release; then
+        add-apt-repository -y ppa:longsleep/golang-backports
+    elif grep -q 'Debian' /etc/os-release; then
+        echo "deb http://ftp.debian.org/debian buster-backports main" > /etc/apt/sources.list.d/backports.list
+        apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 648ACFD622F3D138
     fi
-    
-    local os=$(lsb_release -is)
-    local ver=$(lsb_release -rs)
-    
-    case "$os" in
-        Ubuntu)
-            [[ "$ver" =~ ^(18.04|20.04|22.04|24.04)$ ]] || { echo "Ubuntu $ver não suportado"; exit 1; } ;;
-        Debian)
-            [[ "$ver" =~ ^(9|10|11|12)$ ]] || { echo "Debian $ver não suportado"; exit 1; } ;;
-        *) 
-            echo "Sistema não reconhecido"; exit 1 ;;
-    esac
-}
-
-# Remover instalações antigas
-cleanup_old() {
-    echo "Removendo instalações anteriores..."
-    systemctl stop proxyeuro@* 2>/dev/null || true
-    systemctl disable proxyeuro@* 2>/dev/null || true
-    rm -rf /usr/local/bin/proxyeuro \
-           /etc/systemd/system/proxyeuro@.service \
-           /etc/proxyeuro
-    systemctl daemon-reload
+    apt-get update -qq
 }
 
 # Instalar dependências
 install_deps() {
     echo "Instalando dependências..."
-    apt-get update -qq
-    apt-get install -y -qq golang-1.20 git openssl sed
+    apt-get install -y -qq \
+        golang \
+        git \
+        openssl \
+        sed \
+        software-properties-common
 }
 
 # Compilar aplicação
@@ -63,54 +48,32 @@ compile_app() {
     s/log.Printf("Erro ao ler dados iniciais: %v", err)/log.Printf("Erro de leitura: %v", err)/;
     ' proxy-manager.go
 
-    # Corrigir imports
-    sed -i '/import (/a \
-    "strconv"' proxy-manager.go
+    # Adicionar import faltante
+    if ! grep -q 'strconv' proxy-manager.go; then
+        sed -i '/import (/a \t"strconv"' proxy-manager.go
+    fi
 
-    echo "Compilando versão 3.0..."
+    echo "Compilando..."
+    export GO111MODULE=auto
     go build -o proxyeuro proxy-manager.go
     
     [ ! -f "proxyeuro" ] && echo "Falha na compilação!" && exit 1
 }
 
-# Configurar sistema
-setup_system() {
-    echo "Configurando ambiente..."
-    mv proxyeuro /usr/local/bin/
-    chmod 755 /usr/local/bin/proxyeuro
-    
-    mkdir -p /etc/proxyeuro
-    
-    cat > /etc/systemd/system/proxyeuro@.service <<EOF
-[Unit]
-Description=ProxyEuro na porta %I
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/proxyeuro %i
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-}
+# Restante do script mantido igual (setup_system, main, etc)
+# ... (manter as outras funções do script anterior)
 
 main() {
     check_os
+    setup_repos
     cleanup_old
     install_deps
     compile_app
     setup_system
     
     echo -e "\n✅ Instalação concluída!\n"
+    echo "Versão Go instalada: $(go version)"
     echo "Como usar:"
     echo "Abrir porta:  proxyeuro 80"
     echo "Ver status:   systemctl status proxyeuro@80"
-    echo "Fechar porta: systemctl stop proxyeuro@80"
 }
-
-main

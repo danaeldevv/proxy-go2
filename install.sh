@@ -1,19 +1,18 @@
 #!/bin/bash
 
-# Instalador Oficial ProxyEuro - Versão 5.0
-# Repositório: https://github.com/jeanfraga33/proxy-go2
-
-# Verificar root
-if [ "$(id -u)" != "0" ]; then
+# Verifica se o script está sendo executado como root
+if [ "$(id -u)" -ne 0 ]; then
     echo "Execute como root: sudo $0"
     exit 1
 fi
 
 # Configurações
-REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
-TMP_DIR=$(mktemp -d)
 INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
+LOG_FILE="/var/log/proxyws.log"
+PID_DIR="/var/run"
+REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
+TMP_DIR=$(mktemp -d)
 
 # Função para tratamento de erros
 handle_error() {
@@ -22,13 +21,22 @@ handle_error() {
     exit 1
 }
 
-# Remover instalações anteriores
+# Limpar cache DNS
+clear_dns_cache() {
+    echo "Limpando tabela de cache DNS..."
+    systemd-resolve --flush-caches || echo "❌ Falha ao limpar cache DNS."
+}
+
+# Remover instalação anterior
 cleanup() {
-    echo "Removendo instalações anteriores..."
-    systemctl stop proxyeuro@* 2>/dev/null
-    systemctl disable proxyeuro@* 2>/dev/null
-    rm -rf "$INSTALL_DIR/proxyeuro" "$SERVICE_DIR/proxyeuro@.service"
-    systemctl daemon-reload
+    echo "Verificando instalação anterior..."
+    if [ -f "$INSTALL_DIR/proxyeuro" ]; then
+        echo "Removendo instalação anterior..."
+        systemctl stop proxyeuro@* 2>/dev/null
+        systemctl disable proxyeuro@* 2>/dev/null
+        rm -f "$INSTALL_DIR/proxyeuro" "$SERVICE_DIR/proxyeuro@.service"
+        systemctl daemon-reload
+    fi
 }
 
 # Instalar dependências
@@ -38,36 +46,38 @@ install_deps() {
     apt-get install -y -qq golang git openssl || handle_error "Falha ao instalar dependências"
 }
 
-# Compilar aplicação
-compile_app() {
-    echo "Clonando repositório..."
-    git clone -q "$REPO_URL" "$TMP_DIR" || handle_error "Falha ao clonar repositório"
-    
-    cd "$TMP_DIR" || handle_error "Falha ao acessar diretório temporário"
-    
-    echo "Inicializando módulo Go..."
-    go mod init proxyeuro || handle_error "Falha ao inicializar módulo Go"
-    
-    echo "Compilando aplicação..."
-    go build -o proxyeuro . || handle_error "Falha na compilação"
-    
-    [ ! -f "proxyeuro" ] && handle_error "Binário não gerado"
+# Gerar certificados
+generate_certificates() {
+    echo "Gerando certificados SSL..."
+    mkdir -p /etc/ssl/proxyeuro
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /etc/ssl/proxyeuro/key.pem \
+        -out /etc/ssl/proxyeuro/cert.pem \
+        -subj "/C=BR/ST=State/L=City/O=Organization/OU=Unit/CN=example.com" || handle_error "Falha ao gerar certificados"
 }
 
-# Instalar no sistema
-install_system() {
-    echo "Instalando binário..."
-    install -m 755 proxyeuro "$INSTALL_DIR" || handle_error "Falha na instalação"
+# Clonar repositório e preparar o ambiente
+prepare_environment() {
+    echo "Clonando repositório..."
+    git clone -q "$REPO_URL" "$TMP_DIR" || handle_error "Falha ao clonar repositório"
+    cd "$TMP_DIR" || handle_error "Falha ao acessar diretório temporário"
+}
+
+# Instalar o proxy
+install_proxy() {
+    echo "Instalando o proxy..."
+    cp proxy-manager.go "$INSTALL_DIR/proxyeuro" || handle_error "Falha ao copiar o arquivo do proxy"
+    chmod +x "$INSTALL_DIR/proxyeuro"
     
     echo "Configurando serviço..."
     cat > "$SERVICE_DIR/proxyeuro@.service" <<EOF || handle_error "Falha ao criar serviço"
 [Unit]
-Description=ProxyEuro na porta %I
+Description=ProxyEuro na porta %i
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/proxyeuro --service %i
+ExecStart=/usr/local/bin/proxyeuro %i
 Restart=always
 RestartSec=5
 
@@ -80,16 +90,16 @@ EOF
 
 # Fluxo principal
 main() {
+    clear_dns_cache
     cleanup
     install_deps
-    compile_app
-    install_system
+    generate_certificates
+    prepare_environment
+    install_proxy
     
     echo -e "\n✅ Instalação concluída com sucesso!"
-    echo "Como usar:"
-    echo "Abrir porta:  proxyeuro <porta>"
-    echo "Exemplo:     proxyeuro 8080"
-    echo "Ver status:  systemctl status proxyeuro@8080"
+    echo "Para abrir o menu do proxy, use o comando:"
+    echo "proxyeuro"
 }
 
 # Executar instalação

@@ -35,18 +35,24 @@ systemctl daemon-reload
 
 # Instalar dependências
 echo "Instalando dependências..."
-apt-get install -y golang git openssl
+apt-get install -y golang git openssl sed
 
 # Clonar e compilar
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
 
-echo "Clonando repositório..."
+echo "Clonando e corrigindo código fonte..."
 git clone https://github.com/jeanfraga33/proxy-go2.git
 cd proxy-go2
 
-# Corrigir nome do arquivo se necessário
-[[ -f "proxy-manager.go" ]] && mv "proxy-manager.go" "proxyeuro.go"
+# Aplicar correções no código
+sed -i 's/"io"/\/\/ "io"/' proxy-manager.go
+sed -i 's/n, err := conn.Read(buffer)/_, err := conn.Read(buffer)/' proxy-manager.go
+sed -i 's/import (/import (\n\t"strconv"/' proxy-manager.go
+sed -i 's/porta := os.Args\[1\]/porta := os.Args\[1\]\n\t_ = porta/' proxy-manager.go  # Correção adicional
+
+# Renomear e compilar
+mv proxy-manager.go proxyeuro.go
 
 echo "Compilando aplicação..."
 go build -o proxyeuro proxyeuro.go
@@ -85,5 +91,5 @@ echo "Limpando cache..."
 rm -rf "$TMP_DIR"
 resolvectl flush-caches 2>/dev/null || systemctl restart systemd-resolved 2>/dev/null
 
-echo "Instalação concluída!"
+echo "Instalação concluída com sucesso!"
 echo "Para usar: proxyeuro <porta>"

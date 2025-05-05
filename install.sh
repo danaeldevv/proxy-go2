@@ -1,119 +1,53 @@
 #!/bin/bash
 
-# Instalador Oficial ProxyEuro
-# Versão: 1.0
-# Autor: Jean Fraga
-# Repositório: https://github.com/jeanfraga33/proxy-go2
+# Instalador ProxyEuro
+# Versão: 3.0
+# Repositório: https://github.com/seu-usuario/proxy-go2
 
-# Verificar root
 if [ "$(id -u)" != "0" ]; then
-    echo "Este script deve ser executado como root!" >&2
+    echo "Execute como root: sudo $0"
     exit 1
 fi
 
-# Configurações
-INSTALL_DIR="/usr/local/bin"
-SERVICE_DIR="/etc/systemd/system"
-CERT_DIR="/etc/proxyeuro"
-REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
+echo "=== Instalação ProxyEuro ==="
 
-# Função para limpar instalação anterior
-clean_previous() {
-    echo "Removendo instalações anteriores..."
-    
-    # Parar e desabilitar serviços
-    systemctl stop proxyeuro@* 2>/dev/null
-    systemctl disable proxyeuro@* 2>/dev/null
-    
-    # Remover arquivos
-    rm -f "$INSTALL_DIR/proxyeuro"
-    rm -f "$SERVICE_DIR/proxyeuro@.service"
-    rm -rf "$CERT_DIR"
-    
-    # Recarregar systemd
-    systemctl daemon-reload
-}
+# Remover versões anteriores
+systemctl stop proxyeuro@* 2>/dev/null
+systemctl disable proxyeuro@* 2>/dev/null
+rm -rf /usr/local/bin/proxyeuro 
+rm -f /etc/systemd/system/proxyeuro@.service
 
 # Instalar dependências
-install_dependencies() {
-    echo "Instalando dependências..."
-    apt-get update -qq
-    apt-get install -y -qq \
-        golang \
-        git \
-        openssl \
-        sed \
-        systemd
-}
+apt-get update
+apt-get install -y golang git openssl
 
 # Compilar e instalar
-compile_install() {
-    local temp_dir=$(mktemp -d)
-    
-    echo "Baixando código fonte..."
-    git clone -q "$REPO_URL" "$temp_dir"
-    cd "$temp_dir"
-
-    echo "Compilando aplicação..."
-    go build -o proxyeuro proxy-manager.go
-    
-    if [ ! -f "proxyeuro" ]; then
-        echo "Erro na compilação!" >&2
-        exit 1
-    fi
-
-    echo "Instalando binário..."
-    install -m 755 proxyeuro "$INSTALL_DIR"
-}
+TMP_DIR=$(mktemp -d)
+git clone https://github.com/seu-usuario/proxy-go2.git $TMP_DIR
+cd $TMP_DIR
+go build -o proxyeuro
+install -m 755 proxyeuro /usr/local/bin/
 
 # Configurar systemd
-setup_systemd() {
-    echo "Configurando serviços systemd..."
-    
-    cat > "$SERVICE_DIR/proxyeuro@.service" <<EOF
+cat > /etc/systemd/system/proxyeuro@.service <<EOF
 [Unit]
 Description=ProxyEuro na porta %I
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/proxyeuro %i
+ExecStart=/usr/local/bin/proxyeuro --service %i
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-}
+systemctl daemon-reload
 
-# Configurar ambiente
-setup_environment() {
-    echo "Criando diretório de certificados..."
-    mkdir -p "$CERT_DIR"
-    chmod 700 "$CERT_DIR"
-}
-
-# Main
-main() {
-    # Etapas de instalação
-    clean_previous
-    install_dependencies
-    compile_install
-    setup_systemd
-    setup_environment
-    
-    # Resultado final
-    echo -e "\n✅ Instalação concluída com sucesso!"
-    echo -e "\nComo usar:"
-    echo "1. Abrir porta:  proxyeuro <porta>"
-    echo "2. Ver status:   systemctl status proxyeuro@<porta>"
-    echo "3. Fechar porta: systemctl stop proxyeuro@<porta>"
-    echo -e "\nExemplo:"
-    echo "proxyeuro 8080"
-    echo "systemctl status proxyeuro@8080"
-}
-
-# Executar instalação
-main
+echo -e "\nInstalação concluída!\n"
+echo "Como usar:"
+echo "Abrir porta:  proxyeuro <porta>"
+echo "Exemplo:     proxyeuro 80"
+echo "Ver status:  systemctl status proxyeuro@80"

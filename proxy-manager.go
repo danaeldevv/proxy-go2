@@ -1,22 +1,102 @@
 package main
 
 import (
+	"bufio"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
-	"bufio"
 	"sync"
+	"time"
 )
 
 var (
-	mutex     sync.Mutex
-	servicos  = make(map[int]bool)
-	clearCmd  = exec.Command("clear")
+	mutex    sync.Mutex
+	servicos = make(map[int]bool)
+	clearCmd = exec.Command("clear")
 )
+
+func generateCerts(port int) (*tls.Config, error) {
+	portStr := strconv.Itoa(port)
+	certDir := filepath.Join("/etc/proxyeuro", portStr)
+	certFile := filepath.Join(certDir, "cert.pem")
+	keyFile := filepath.Join(certDir, "key.pem")
+
+	// Remover certificados existentes
+	if _, err := os.Stat(certDir); !os.IsNotExist(err) {
+		os.RemoveAll(certDir)
+	}
+	os.MkdirAll(certDir, 0755)
+
+	// Gerar chave privada
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao gerar chave privada: %v", err)
+	}
+
+	// Criar template do certificado
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"ProxyEuro"},
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+		},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames: []string{"localhost"},
+	}
+
+	// Gerar certificado
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privKey.PublicKey, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar certificado: %v", err)
+	}
+
+	// Salvar certificado
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao salvar certificado: %v", err)
+	}
+	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certOut.Close()
+
+	// Salvar chave privada
+	keyOut, err := os.OpenFile(keyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao salvar chave privada: %v", err)
+	}
+	pem.Encode(keyOut, &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privKey),
+	})
+	keyOut.Close()
+
+	// Carregar certificado
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao carregar certificado: %v", err)
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}, nil
+}
 
 func clearScreen() {
 	clearCmd.Stdout = os.Stdout
@@ -44,14 +124,14 @@ func printMenu() {
 
 func handleConnection(conn net.Conn, tlsConfig *tls.Config) {
 	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
+	_, err := conn.Read(buffer)
 	if err != nil {
-		log.Printf("Erro ao ler dados iniciais: %v", err)
+		log.Printf("Erro ao ler dados: %v", err)
 		conn.Close()
 		return
 	}
 
-	data := buffer[:n]
+	data := buffer[:]
 
 	if isTLS(data) {
 		tlsConn := tls.Server(conn, tlsConfig)
@@ -89,7 +169,7 @@ func handleProtocol(conn net.Conn, data []byte) {
 func handleSOCKS5(conn net.Conn, data []byte) {
 	conn.Write([]byte{0x05, 0x00})
 	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
+	_, err := conn.Read(buffer)
 	if err != nil {
 		log.Printf("Erro SOCKS5: %v", err)
 		conn.Close()
@@ -143,9 +223,7 @@ func abrirPorta(port int) {
 	}
 
 	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
-
-	cmd := exec.Command("systemctl", "daemon-reexec")
-	cmd.Run()
+	servicePath := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
 
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=ProxyEuro na porta %d
@@ -153,17 +231,16 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/proxy_worker %d
+ExecStart=/usr/local/bin/proxyeuro %d
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 `, port, port)
 
-	servicePath := fmt.Sprintf("/etc/systemd/system/%s", serviceName)
 	err := os.WriteFile(servicePath, []byte(serviceContent), 0644)
 	if err != nil {
-		fmt.Println("Erro ao criar arquivo do serviço:", err)
+		fmt.Println("Erro ao criar serviço:", err)
 		return
 	}
 
@@ -171,12 +248,12 @@ WantedBy=multi-user.target
 	exec.Command("systemctl", "enable", serviceName).Run()
 	err = exec.Command("systemctl", "start", serviceName).Run()
 	if err != nil {
-		fmt.Println("Erro ao iniciar o serviço:", err)
+		fmt.Println("Erro ao iniciar serviço:", err)
 		return
 	}
 
 	servicos[port] = true
-	fmt.Printf("Porta %d aberta e serviço %s iniciado.\n", port, serviceName)
+	fmt.Printf("Porta %d aberta com sucesso!\n", port)
 }
 
 func fecharPorta(port int) {
@@ -191,80 +268,71 @@ func fecharPorta(port int) {
 	serviceName := fmt.Sprintf("proxyeuro@%d.service", port)
 	exec.Command("systemctl", "stop", serviceName).Run()
 	exec.Command("systemctl", "disable", serviceName).Run()
-	err := os.Remove(fmt.Sprintf("/etc/systemd/system/%s", serviceName))
-	if err != nil {
-		fmt.Println("Erro ao remover serviço:", err)
-	}
-
+	os.Remove(fmt.Sprintf("/etc/systemd/system/%s", serviceName))
 	exec.Command("systemctl", "daemon-reload").Run()
 	delete(servicos, port)
-	fmt.Printf("Porta %d fechada e serviço %s removido.\n", port, serviceName)
+	fmt.Printf("Porta %d fechada com sucesso!\n", port)
 }
 
 func main() {
-	reader := bufio.NewReader(os.Stdin)
-
 	if len(os.Args) != 2 {
-		fmt.Println("Uso: ./proxy_worker <porta>")
+		fmt.Println("Uso: proxyeuro <porta>")
 		os.Exit(1)
 	}
 
-	porta := os.Args[1]
-	certDir := "/etc/proxyeuro/" + porta
-	certFile := certDir + "/cert.pem"
-	keyFile := certDir + "/key.pem"
-
-	tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	port, err := strconv.Atoi(os.Args[1])
 	if err != nil {
-		log.Fatalf("Erro carregando certificado TLS: %v", err)
+		log.Fatalf("Porta inválida: %v", err)
 	}
 
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{tlsCert}}
-
-	listener, err := net.Listen("tcp", ":"+porta)
+	tlsConfig, err := generateCerts(port)
 	if err != nil {
-		log.Fatalf("Erro ao escutar na porta %s: %v", porta, err)
+		log.Fatalf("Erro nos certificados: %v", err)
 	}
 
-	log.Printf("🚀 Proxy escutando na porta %s...", porta)
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		log.Fatalf("Erro ao iniciar servidor: %v", err)
+	}
+	defer listener.Close()
+
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				log.Printf("Erro ao aceitar conexão: %v", err)
+				log.Printf("Erro na conexão: %v", err)
 				continue
 			}
 			go handleConnection(conn, tlsConfig)
 		}
 	}()
 
-	// Menu de controle interativo
+	reader := bufio.NewReader(os.Stdin)
 	for {
 		printMenu()
-		opt, _ := reader.ReadString('\n')
-		opt = strings.TrimSpace(opt)
+		input, _ := reader.ReadString('\n')
+		option := strings.TrimSpace(input)
 
-		switch opt {
+		switch option {
 		case "1":
 			fmt.Print("Digite a porta para abrir: ")
 			portStr, _ := reader.ReadString('\n')
-			port, _ := strconv.Atoi(strings.TrimSpace(portStr))
-			abrirPorta(port)
+			newPort, _ := strconv.Atoi(strings.TrimSpace(portStr))
+			abrirPorta(newPort)
 		case "2":
 			fmt.Print("Digite a porta para fechar: ")
 			portStr, _ := reader.ReadString('\n')
-			port, _ := strconv.Atoi(strings.TrimSpace(portStr))
-			fecharPorta(port)
+			closePort, _ := strconv.Atoi(strings.TrimSpace(portStr))
+			fecharPorta(closePort)
 		case "3":
 			monitorarPortas()
-			fmt.Print("\nPressione Enter para voltar ao menu...")
+			fmt.Print("\nPressione Enter para continuar...")
 			reader.ReadString('\n')
 		case "4":
 			fmt.Println("Encerrando...")
-			listener.Close()
 			return
 		default:
-			fmt.Println("Opção inválida.")
+			fmt.Println("Opção inválida!")
 		}
 	}
 }

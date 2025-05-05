@@ -10,9 +10,8 @@ fi
 INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
 LOG_FILE="/var/log/proxyws.log"
-PID_DIR="/var/run"
-REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 TMP_DIR=$(mktemp -d)
+REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 
 # Função para tratamento de erros
 handle_error() {
@@ -63,13 +62,20 @@ prepare_environment() {
     cd "$TMP_DIR" || handle_error "Falha ao acessar diretório temporário"
 }
 
-# Instalar o proxy
+# Compilar o proxy
+compile_proxy() {
+    echo "Compilando o proxy..."
+    go mod init proxyeuro 2>/dev/null || true
+    go build -o proxyeuro proxy-manager.go || handle_error "Falha ao compilar o proxy"
+}
+
+# Instalar o binário do proxy
 install_proxy() {
     echo "Instalando o proxy..."
-    cp proxy-manager.go "$INSTALL_DIR/proxyeuro" || handle_error "Falha ao copiar o arquivo do proxy"
+    cp proxyeuro "$INSTALL_DIR/proxyeuro" || handle_error "Falha ao copiar o binário"
     chmod +x "$INSTALL_DIR/proxyeuro"
     
-    echo "Configurando serviço..."
+    echo "Configurando serviço systemd..."
     cat > "$SERVICE_DIR/proxyeuro@.service" <<EOF || handle_error "Falha ao criar serviço"
 [Unit]
 Description=ProxyEuro na porta %i
@@ -77,7 +83,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/proxyeuro %i
+ExecStart=$INSTALL_DIR/proxyeuro %i
 Restart=always
 RestartSec=5
 
@@ -95,6 +101,7 @@ main() {
     install_deps
     generate_certificates
     prepare_environment
+    compile_proxy
     install_proxy
     
     echo -e "\n✅ Instalação concluída com sucesso!"

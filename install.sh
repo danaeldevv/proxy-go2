@@ -1,77 +1,75 @@
 #!/bin/bash
 
-# Instalador Oficial ProxyEuro - Versão 6.0
-# Com todas as correções de compilação aplicadas
+# Instalador Oficial ProxyEuro
+# Versão: 1.0
+# Autor: Jean Fraga
 # Repositório: https://github.com/jeanfraga33/proxy-go2
 
-set -euo pipefail
-
 # Verificar root
-[ "$(id -u)" != "0" ] && echo "Execute como root: sudo $0" && exit 1
+if [ "$(id -u)" != "0" ]; then
+    echo "Este script deve ser executado como root!" >&2
+    exit 1
+fi
 
 # Configurações
-REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
+CERT_DIR="/etc/proxyeuro"
+REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 
-# Verificar sistema
-check_os() {
-    if ! grep -qEi "(ubuntu|debian)" /etc/os-release; then
-        echo "Sistema não suportado! Use Ubuntu/Debian."
-        exit 1
-    fi
-}
-
-# Aplicar patches no código
-apply_patches() {
-    local src_file="$1/proxy-manager.go"
+# Função para limpar instalação anterior
+clean_previous() {
+    echo "Removendo instalações anteriores..."
     
-    echo "Aplicando correções no código fonte..."
+    # Parar e desabilitar serviços
+    systemctl stop proxyeuro@* 2>/dev/null
+    systemctl disable proxyeuro@* 2>/dev/null
     
-    # Correção de imports e variáveis
-    sed -i '
-    /^import (/ {
-        s/"io"/\/\/ "io"/;
-        s/"strconv"/"strconv"/;
-    }
-    s/n, err := conn.Read(buffer)/_, err := conn.Read(buffer)/;
-    s/porta := os.Args\[1\]/porta, _ := strconv.Atoi(os.Args[1])/;
-    s/":"+porta/":"+strconv.Itoa(porta)/g;
-    s/log.Printf("Erro ao ler dados iniciais: %v", err)/log.Printf("Erro na leitura: %v", err)/;
-    ' "$src_file"
+    # Remover arquivos
+    rm -f "$INSTALL_DIR/proxyeuro"
+    rm -f "$SERVICE_DIR/proxyeuro@.service"
+    rm -rf "$CERT_DIR"
+    
+    # Recarregar systemd
+    systemctl daemon-reload
 }
 
 # Instalar dependências
-install_deps() {
+install_dependencies() {
     echo "Instalando dependências..."
     apt-get update -qq
-    apt-get install -y -qq golang git openssl
+    apt-get install -y -qq \
+        golang \
+        git \
+        openssl \
+        sed \
+        systemd
 }
 
-# Compilar aplicação
-compile_app() {
+# Compilar e instalar
+compile_install() {
     local temp_dir=$(mktemp -d)
     
     echo "Baixando código fonte..."
     git clone -q "$REPO_URL" "$temp_dir"
-    
-    apply_patches "$temp_dir"
-    
-    echo "Compilando aplicação..."
     cd "$temp_dir"
+
+    echo "Compilando aplicação..."
     go build -o proxyeuro proxy-manager.go
     
-    [ ! -f "proxyeuro" ] && echo "Erro na compilação!" && exit 1
+    if [ ! -f "proxyeuro" ]; then
+        echo "Erro na compilação!" >&2
+        exit 1
+    fi
+
+    echo "Instalando binário..."
+    install -m 755 proxyeuro "$INSTALL_DIR"
 }
 
-# Configurar sistema
-setup_system() {
-    echo "Configurando serviços..."
+# Configurar systemd
+setup_systemd() {
+    echo "Configurando serviços systemd..."
     
-    # Instalar binário
-    install -m 755 proxyeuro "$INSTALL_DIR"
-    
-    # Criar serviço systemd
     cat > "$SERVICE_DIR/proxyeuro@.service" <<EOF
 [Unit]
 Description=ProxyEuro na porta %I
@@ -90,18 +88,32 @@ EOF
     systemctl daemon-reload
 }
 
-# Main
-main() {
-    check_os
-    install_deps
-    compile_app
-    setup_system
-    
-    echo -e "\n✅ Instalação concluída com sucesso!"
-    echo "Como usar:"
-    echo "Abrir porta:  proxyeuro <porta>"
-    echo "Exemplo:     proxyeuro 8080"
-    echo "Ver status:  systemctl status proxyeuro@8080"
+# Configurar ambiente
+setup_environment() {
+    echo "Criando diretório de certificados..."
+    mkdir -p "$CERT_DIR"
+    chmod 700 "$CERT_DIR"
 }
 
+# Main
+main() {
+    # Etapas de instalação
+    clean_previous
+    install_dependencies
+    compile_install
+    setup_systemd
+    setup_environment
+    
+    # Resultado final
+    echo -e "\n✅ Instalação concluída com sucesso!"
+    echo -e "\nComo usar:"
+    echo "1. Abrir porta:  proxyeuro <porta>"
+    echo "2. Ver status:   systemctl status proxyeuro@<porta>"
+    echo "3. Fechar porta: systemctl stop proxyeuro@<porta>"
+    echo -e "\nExemplo:"
+    echo "proxyeuro 8080"
+    echo "systemctl status proxyeuro@8080"
+}
+
+# Executar instalação
 main

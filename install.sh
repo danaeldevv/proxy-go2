@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Definindo variáveis
-PROXY_DIR="/usr/local/bin/proxy_worker"
+PROXY_DIR="/usr/local/bin/proxy-worker"
 SYSTEMD_SERVICE_PATH="/etc/systemd/system/proxyeuro@.service"
 GITHUB_REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 INSTALL_DIR="/usr/local/src/proxy-go2"

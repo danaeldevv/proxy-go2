@@ -18,12 +18,11 @@ rm -rf /usr/local/bin/proxyeuro
 rm -f /etc/systemd/system/proxyeuro@.service
 
 # Instalar dependências
-apt-get update
 apt-get install -y golang git openssl
 
 # Compilar e instalar
 TMP_DIR=$(mktemp -d)
-git clone https://github.com/seu-usuario/proxy-go2.git $TMP_DIR
+git clone https://github.com/jeanfraga33/proxy-go2.git $TMP_DIR
 cd $TMP_DIR
 go build -o proxyeuro
 install -m 755 proxyeuro /usr/local/bin/

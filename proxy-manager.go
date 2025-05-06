@@ -201,6 +201,19 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	return false
 }
 
+// Corrigida a capitalização da função isHTTPMethod
+func isHTTPMethod(data string) bool {
+	data = strings.ToUpper(data)
+	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT"}
+
+	for _, m := range methods {
+		if strings.HasPrefix(data, m+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 // Tenta redirecionar como MQTT
 func tryMQTT(conn net.Conn, useTLS bool) bool {
 	initialBuf := make([]byte, 8192)

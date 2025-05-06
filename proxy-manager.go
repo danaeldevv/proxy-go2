@@ -68,11 +68,43 @@ func readInitialData(conn net.Conn) (string, error) {
 	return string(buf[:n]), nil
 }
 
+func isHTTPMethod(data string) bool {
+	data = strings.ToUpper(data)
+	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT"}
+	for _, m := range methods {
+		if strings.HasPrefix(data, m+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// Função auxiliar para handshake TLS e obter conn decorada ou falha
+func tryTLSHandshake(conn net.Conn) (net.Conn, error) {
+	if sslConfig == nil {
+		return nil, fmt.Errorf("sslConfig não definido")
+	}
+	tlsConn := tls.Server(conn, sslConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, err
+	}
+	return tlsConn, nil
+}
+
 // Tenta redirecionar a conexão usando diferentes protocolos com suporte TLS
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
 	originalConn := conn
+
+	resetConn := func(c net.Conn) net.Conn {
+		conn1, conn2 := net.Pipe()
+		go func() {
+			io.Copy(conn1, c)
+			conn1.Close()
+		}()
+		return conn2
+	}
 
 	// Protocolos que suportam TLS: WebSocket, MQTT, XMPP, HTTP/2, AMQP
 	// Para cada protocolo: tentar TLS primeiro se sslConfig != nil, senão tentar sem TLS directly.
@@ -83,15 +115,6 @@ func tryProtocols(conn net.Conn) {
 	}
 	if tryWebSocket(originalConn, false) {
 		return
-	}
-
-	resetConn := func(c net.Conn) net.Conn {
-		conn1, conn2 := net.Pipe()
-		go func() {
-			io.Copy(conn1, c)
-			conn1.Close()
-		}()
-		return conn2
 	}
 
 	originalConn = resetConn(originalConn)
@@ -147,18 +170,6 @@ func tryProtocols(conn net.Conn) {
 	tryTCP(originalConn)
 }
 
-// Função auxiliar para handshake TLS e obter conn decorada ou falha
-func tryTLSHandshake(conn net.Conn) (net.Conn, error) {
-	if sslConfig == nil {
-		return nil, fmt.Errorf("sslConfig não definido")
-	}
-	tlsConn := tls.Server(conn, sslConfig)
-	if err := tlsConn.Handshake(); err != nil {
-		return nil, err
-	}
-	return tlsConn, nil
-}
-
 // Tenta redirecionar como WebSocket
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	initialData, err := readInitialData(conn)
@@ -176,17 +187,36 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		conn = tlsConn
 	}
 
-	if strings.Contains(strings.ToLower(initialData), "upgrade: websocket") {
-		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+	// Verificar Upgrade header de forma flexível e Connection header para permitir Keep-Alive
+	lowerData := strings.ToLower(initialData)
+	if strings.Contains(lowerData, "upgrade: websocket") ||
+		strings.Contains(lowerData, "connection: upgrade") ||
+		strings.Contains(lowerData, "connection: keep-alive") {
+		// Responder upgrade ou connection accepted, ou simplesmente proxyar
+		// Ainda responde 101 Switching Protocols se Upgrade websocket detectado
+		if strings.Contains(lowerData, "upgrade: websocket") {
+			resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+			if _, err := conn.Write([]byte(resp)); err != nil {
+				logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
+				return false
+			}
+			logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
+			sshRedirect(conn)
+			return true
+		}
+
+		// Caso diferente, responder 200 Connection Established para payloads HTTP genéricos
+		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
+			logMessage("Erro enviando resposta 200 HTTP WebSocket: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
+		logMessage(fmt.Sprintf("Conexão HTTP estabelecida (TLS=%v)", useTLS))
 		sshRedirect(conn)
 		return true
 	}
 
+	// Caso seja uma requisição HTTP normal (qualquer método), responder 200 Connection Established e redirecionar para SSH
 	if isHTTPMethod(initialData) {
 		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
@@ -198,19 +228,6 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		return true
 	}
 
-	return false
-}
-
-// Corrigida a capitalização da função isHTTPMethod
-func isHTTPMethod(data string) bool {
-	data = strings.ToUpper(data)
-	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT"}
-
-	for _, m := range methods {
-		if strings.HasPrefix(data, m+" ") {
-			return true
-		}
-	}
 	return false
 }
 
@@ -227,7 +244,6 @@ func tryMQTT(conn net.Conn, useTLS bool) bool {
 
 	initialData := initialBuf[:n]
 
-	// Caso TLS, tentar handshake
 	if useTLS {
 		tlsConn, err := tryTLSHandshake(&peekConn{Conn: conn, peeked: initialData})
 		if err != nil {

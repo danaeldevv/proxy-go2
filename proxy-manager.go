@@ -2,9 +2,7 @@ package main
 
 import (
 	"bufio"
-	"crypto/sha1"
 	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -58,21 +56,7 @@ func (p *peekConn) Read(b []byte) (int, error) {
 	return p.Conn.Read(b)
 }
 
-func readInitialBytes(conn net.Conn, n int) ([]byte, error) {
-	buf := make([]byte, n)
-	conn.SetReadDeadline(time.Now().Add(readTimeout))
-	readBytes := 0
-	for readBytes < n {
-		rn, err := conn.Read(buf[readBytes:])
-		if err != nil {
-			return buf[:readBytes], err
-		}
-		readBytes += rn
-	}
-	conn.SetReadDeadline(time.Time{})
-	return buf, nil
-}
-
+// leitura inicial com timeout e captura dos dados para análise
 func readInitialData(conn net.Conn) (string, error) {
 	buf := make([]byte, 8192)
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
@@ -80,154 +64,96 @@ func readInitialData(conn net.Conn) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	conn.SetReadDeadline(time.Time{})
+	conn.SetReadDeadline(time.Time{}) // limpa deadline
 	return string(buf[:n]), nil
 }
 
-func computeAcceptKey(secWebSocketKey string) string {
-	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	h := sha1.New()
-	h.Write([]byte(secWebSocketKey + magicGUID))
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
-}
-
-func handleWebSocketHandshake(conn net.Conn, request string) error {
-	lines := strings.Split(request, "\r\n")
-	var secWebSocketKey string
-	for _, line := range lines {
-		if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				secWebSocketKey = strings.TrimSpace(parts[1])
-				break
-			}
-		}
-	}
-	if secWebSocketKey == "" {
-		return fmt.Errorf("Sec-WebSocket-Key não encontrado")
-	}
-	acceptKey := computeAcceptKey(secWebSocketKey)
-	response := "HTTP/1.1 101 Switching Protocols\r\n" +
-		"Upgrade: websocket\r\n" +
-		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + acceptKey + "\r\n\r\n"
-
-	_, err := conn.Write([]byte(response))
-	return err
-}
-
+// Tenta redirecionar a conexão usando diferentes protocolos
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
-	// Primeiro lê os 1-3 bytes iniciais para detectar se é TLS ou SOCKS
-	peekBytes, err := peekInitialBytes(conn, 3)
-	if err != nil {
-		logMessage("Erro ao fazer peek nos bytes iniciais: " + err.Error())
+	// Guardar a conexão original para reutilizar nas tentativas
+	originalConn := conn
+
+	// Tenta WebSocket sem TLS
+	if tryWebSocket(originalConn, false) {
 		return
 	}
 
-	if len(peekBytes) == 0 {
-		logMessage("Nenhum dado recebido para determinar protocolo")
+	// Resetar conexão para nova tentativa
+	conn1, conn2 := net.Pipe()
+	go func() {
+		io.Copy(conn1, originalConn)
+		conn1.Close()
+	}()
+	originalConn = conn2
+
+	// Tenta WebSocket com TLS
+	if tryWebSocket(originalConn, true) {
 		return
 	}
 
-	// Se 1o byte é 0x05 = SOCKS5
-	if peekBytes[0] == 0x05 {
-		if trySocks(conn) {
-			return
-		}
-	}
+	// Resetar conexão para nova tentativa
+	conn3, conn4 := net.Pipe()
+	go func() {
+		io.Copy(conn3, originalConn)
+		conn3.Close()
+	}()
+	originalConn = conn4
 
-	// Se 1o byte 0x16 e possui sslConfig = TLS ClientHello -> WebSocket Secure
-	if peekBytes[0] == 0x16 && sslConfig != nil {
-		if tryWebSocket(conn, true) {
-			return
-		}
-	}
-
-	// Caso contrário, tenta WebSocket normal
-	if tryWebSocket(conn, false) {
+	// Tenta SOCKS5
+	if trySocks(originalConn) {
 		return
 	}
 
-	// Fallback TCP simples
-	tryTCP(conn)
+	// Resetar conexão para nova tentativa
+	conn5, conn6 := net.Pipe()
+	go func() {
+		io.Copy(conn5, originalConn)
+		conn5.Close()
+	}()
+	originalConn = conn6
+
+	// Tenta TCP simples
+	tryTCP(originalConn)
 }
 
-// Faz peek (leitura sem consumir) dos primeiros n bytes, usando PeekConn temporário
-func peekInitialBytes(conn net.Conn, n int) ([]byte, error) {
-	// Use bufio.Reader and Peek without consuming data in the main conn
-	reader := bufio.NewReader(conn)
-	peeked, err := reader.Peek(n)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	return peeked, nil
-}
-
-// Overwrite tryWebSocket para receber conn agora bufio.Reader disponível
+// Tenta redirecionar como WebSocket
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
-	// Usar bufio.Reader para suportar peek correto
-	bufReader := bufio.NewReader(conn)
-	// Ler primeiro request
-	reqLines := []string{}
-	for {
-		line, err := bufReader.ReadString('\n')
-		if err != nil {
-			logMessage(fmt.Sprintf("Erro lendo linha em WebSocket (TLS=%v): %v", useTLS, err))
-			return false
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			break
-		}
-		reqLines = append(reqLines, line)
-	}
-
-	if len(reqLines) == 0 {
+	initialData, err := readInitialData(conn)
+	if err != nil {
+		logMessage(fmt.Sprintf("Erro na leitura inicial para WebSocket (TLS=%v): %v", useTLS, err))
 		return false
 	}
-
-	// Reconstruir o request para envio ao handshake
-	request := strings.Join(reqLines, "\r\n") + "\r\n\r\n"
 
 	if useTLS {
 		if sslConfig == nil {
 			logMessage("SSL Config não definida, não pode usar TLS para WebSocket")
 			return false
 		}
-		tlsConn := tls.Server(&connWithBuf{Conn: conn, reader: bufReader}, sslConfig)
+		tlsConn := tls.Server(&peekConn{Conn: conn, peeked: []byte(initialData)}, sslConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			logMessage(fmt.Sprintf("Erro handshake TLS para WebSocket: %v", err))
 			return false
 		}
 		conn = tlsConn
-	} else {
-		conn = &connWithBuf{Conn: conn, reader: bufReader}
 	}
 
-	if strings.HasPrefix(reqLines[0], "GET") || strings.HasPrefix(reqLines[0], "CONNECT") {
-		err := handleWebSocketHandshake(conn, request)
-		if err != nil {
-			logMessage("Erro no handshake WebSocket: " + err.Error())
+	if strings.HasPrefix(initialData, "GET") || strings.HasPrefix(initialData, "CONNECT") {
+		resp := "HTTP/1.1 101 ProxyEuro\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		if _, err := conn.Write([]byte(resp)); err != nil {
+			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v) e redirecionando para SSH", useTLS))
+		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
 		sshRedirect(conn)
 		return true
 	}
+
 	return false
 }
 
-type connWithBuf struct {
-	net.Conn
-	reader *bufio.Reader
-}
-
-func (c *connWithBuf) Read(b []byte) (int, error) {
-	return c.reader.Read(b)
-}
-
+// Tenta redirecionar como SOCKS5
 func trySocks(conn net.Conn) bool {
 	initialData, err := readInitialData(conn)
 	if err != nil {
@@ -236,26 +162,27 @@ func trySocks(conn net.Conn) bool {
 	}
 
 	if len(initialData) > 0 && initialData[0] == 0x05 {
-		resp := "HTTP/1.1 200 Switching Protocols\r\n\r\n"
+		resp := "HTTP/1.1 200 OK ProxyEuro\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 Switching Protocols para SOCKS5: " + err.Error())
+			logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
 			return false
 		}
-		logMessage("Conexão SOCKS5 estabelecida, redirecionando para SSH")
+		logMessage("Conexão SOCKS5 estabelecida")
 		sshRedirect(conn)
 		return true
 	}
+
 	return false
 }
 
+// Tenta redirecionar como TCP simples
 func tryTCP(conn net.Conn) {
-	logMessage("Tentativa de conexão TCP simples, redirecionando para SSH")
-	resp := "HTTP/1.1 200 OK\r\n\r\n"
-	_, _ = conn.Write([]byte(resp))
+	logMessage("Tentativa de conexão TCP simples")
 	sshRedirect(conn)
 }
 
-func sshRedirect(clientConn net.Conn) {
+// Redireciona a conexão para o servidor SSH
+func sshRedirect(conn net.Conn) {
 	serverConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
 		logMessage(fmt.Sprintf("Erro ao conectar ao servidor SSH: %v", err))
@@ -267,21 +194,23 @@ func sshRedirect(clientConn net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		io.Copy(serverConn, clientConn)
+		io.Copy(serverConn, conn)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(clientConn, serverConn)
+		io.Copy(conn, serverConn)
 	}()
 	wg.Wait()
 
-	logMessage("Conexão proxy finalizada para SSH")
+	logMessage("Conexão redirecionada para o servidor SSH finalizada")
 }
 
+// Arquivo systemd service path
 func systemdServicePath(port int) string {
 	return fmt.Sprintf("%s/proxyws@%d.service", serviceDir, port)
 }
 
+// Criação do arquivo systemd service para o proxy
 func createSystemdService(port int, execPath string) error {
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=ProxyWS na porta %d

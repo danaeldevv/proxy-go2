@@ -96,19 +96,12 @@ func handleConn(conn net.Conn) {
                 clientConn = &peekConn{Conn: clientConn, peeked: []byte(initialData)}
         }
 
-        // Verifica se a string "SSH" está presente nos dados iniciais
-        redirectAddr := "127.0.0.1:22" // default SSH
-        if !strings.Contains(initialData, "SSH") && len(initialData) > 0 {
-                // Se não contém "SSH", vamos redirecionar para outra porta (exemplo 1194)
-                redirectAddr = "127.0.0.1:1194"
-        }
-
         reader := bufio.NewReader(clientConn)
 
         line, err := reader.ReadString('\n')
         if err != nil {
-                logMessage(fmt.Sprintf("Erro lendo primeira linha: %v", err))
-                // Mesmo em erro tentamos redirecionar para SSH porque usuário quer qualquer conexão
+                logMessage(fmt.Sprintf("Erro lendo primeira linha (provavelmente TCP simples): %v", err))
+                // Redireciona para SSH mesmo se erro
                 sshRedirect(clientConn)
                 return
         }
@@ -132,50 +125,48 @@ func handleConn(conn net.Conn) {
                         }
                 }
                 if strings.ToLower(headers["upgrade"]) == "websocket" {
-                        resp := "HTTP/1.1 101 Proxy Cloud JF\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+                        resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
                         if _, err := clientConn.Write([]byte(resp)); err != nil {
                                 logMessage("Erro enviando resposta 101 websocket: " + err.Error())
                                 return
                         }
-                        logMessage(fmt.Sprintf("Conexão WebSocket %s estabelecida", map[bool]string{true:"TLS", false:"sem TLS"}[isTLS]))
-                        // Redireciona para o endereço definido conforme conteúdo
-                        genericRedirect(clientConn, redirectAddr)
+                        logMessage(fmt.Sprintf("Conexão WebSocket %s estabelecida e redirecionando para SSH", map[bool]string{true:"TLS", false:"sem TLS"}[isTLS]))
+                        sshRedirect(clientConn)
                         return
                 } else {
-                        resp := "HTTP/1.1 200 Proxy Cloud JF\r\n\r\n"
+                        resp := "HTTP/1.1 200 OK\r\n\r\n"
                         if _, err := clientConn.Write([]byte(resp)); err != nil {
                                 logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
                         }
-                        logMessage("HTTP normal identificado, resposta 200 enviada")
-                        // Redireciona para o endereço definido conforme conteúdo
-                        genericRedirect(clientConn, redirectAddr)
+                        logMessage("HTTP normal identificado, resposta 200 enviada e redirecionando para SSH")
+                        sshRedirect(clientConn)
                         return
                 }
         } else if line == "\x05" {
-                resp := "HTTP/1.1 200 Proxy Cloud JF\r\n\r\n"
+                resp := "HTTP/1.1 200 OK\r\n\r\n"
                 if _, err := clientConn.Write([]byte(resp)); err != nil {
                         logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
                         return
                 }
-                logMessage("Conexão SOCKS5 estabelecida, enviando proxy para SSH")
+                logMessage("Conexão SOCKS5 estabelecida, redirecionando para SSH")
                 sshRedirect(clientConn)
                 return
         } else {
-                // Nenhum protocolo reconhecido, mas redireciona conforme string detectada em dados iniciais
-                resp := "HTTP/1.1 200 Proxy Cloud JF\r\n\r\n"
+                // Qualquer outro tipo de conexão TCP simples ou não identificado, redireciona para SSH
+                resp := "HTTP/1.1 200 OK\r\n\r\n"
                 if _, err := clientConn.Write([]byte(resp)); err != nil {
                         logMessage("Erro enviando resposta 200 padrão: " + err.Error())
                 }
-                logMessage("Protocolo desconhecido, respondeu 200 e redirecionando conforme dado inicial")
-                genericRedirect(clientConn, redirectAddr)
+                logMessage("Protocolo desconhecido ou TCP simples, redirecionando para SSH")
+                sshRedirect(clientConn)
         }
 }
 
-// genericRedirect forward client <-> addr
-func genericRedirect(clientConn net.Conn, addr string) {
-        serverConn, err := net.Dial("tcp", addr)
+// sshRedirect forward client <-> SSH listening on 127.0.0.1:22
+func sshRedirect(clientConn net.Conn) {
+        serverConn, err := net.Dial("tcp", "127.0.0.1:22")
         if err != nil {
-                logMessage("Erro conectando ao destino "+addr+": " + err.Error())
+                logMessage("Erro conectando SSH local: " + err.Error())
                 return
         }
         defer serverConn.Close()
@@ -192,12 +183,7 @@ func genericRedirect(clientConn net.Conn, addr string) {
         }()
         wg.Wait()
 
-        logMessage("Conexão proxy finalizada para " + addr)
-}
-
-// sshRedirect forward client <-> SSH listening on 127.0.0.1:22
-func sshRedirect(clientConn net.Conn) {
-        genericRedirect(clientConn, "127.0.0.1:22")
+        logMessage("Conexão proxy finalizada para SSH")
 }
 
 func startProxy(port int) {

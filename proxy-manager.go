@@ -58,7 +58,21 @@ func (p *peekConn) Read(b []byte) (int, error) {
 	return p.Conn.Read(b)
 }
 
-// leitura inicial com timeout e captura dos dados para análise
+func readInitialBytes(conn net.Conn, n int) ([]byte, error) {
+	buf := make([]byte, n)
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	readBytes := 0
+	for readBytes < n {
+		rn, err := conn.Read(buf[readBytes:])
+		if err != nil {
+			return buf[:readBytes], err
+		}
+		readBytes += rn
+	}
+	conn.SetReadDeadline(time.Time{})
+	return buf, nil
+}
+
 func readInitialData(conn net.Conn) (string, error) {
 	buf := make([]byte, 8192)
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
@@ -66,11 +80,10 @@ func readInitialData(conn net.Conn) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	conn.SetReadDeadline(time.Time{}) // limpa deadline
+	conn.SetReadDeadline(time.Time{})
 	return string(buf[:n]), nil
 }
 
-// computa o valor do Sec-WebSocket-Accept a partir do Sec-WebSocket-Key
 func computeAcceptKey(secWebSocketKey string) string {
 	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	h := sha1.New()
@@ -78,11 +91,9 @@ func computeAcceptKey(secWebSocketKey string) string {
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
-// responde corretamente o handshake WebSocket com o cabeçalho Sec-WebSocket-Accept
 func handleWebSocketHandshake(conn net.Conn, request string) error {
 	lines := strings.Split(request, "\r\n")
 	var secWebSocketKey string
-
 	for _, line := range lines {
 		if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
 			parts := strings.SplitN(line, ":", 2)
@@ -96,69 +107,107 @@ func handleWebSocketHandshake(conn net.Conn, request string) error {
 		return fmt.Errorf("Sec-WebSocket-Key não encontrado")
 	}
 	acceptKey := computeAcceptKey(secWebSocketKey)
-	response := "HTTP/1.1 101 Switching Protocols\r\n"
-	response += "Upgrade: websocket\r\n"
-	response += "Connection: Upgrade\r\n"
-	response += "Sec-WebSocket-Accept: " + acceptKey + "\r\n"
-	response += "\r\n"
+	response := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + acceptKey + "\r\n\r\n"
 
 	_, err := conn.Write([]byte(response))
 	return err
 }
 
-// Tenta redirecionar a conexão usando diferentes protocolos
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
-	// Tenta WebSocket sem TLS
+	// Primeiro lê os 1-3 bytes iniciais para detectar se é TLS ou SOCKS
+	peekBytes, err := peekInitialBytes(conn, 3)
+	if err != nil {
+		logMessage("Erro ao fazer peek nos bytes iniciais: " + err.Error())
+		return
+	}
+
+	if len(peekBytes) == 0 {
+		logMessage("Nenhum dado recebido para determinar protocolo")
+		return
+	}
+
+	// Se 1o byte é 0x05 = SOCKS5
+	if peekBytes[0] == 0x05 {
+		if trySocks(conn) {
+			return
+		}
+	}
+
+	// Se 1o byte 0x16 e possui sslConfig = TLS ClientHello -> WebSocket Secure
+	if peekBytes[0] == 0x16 && sslConfig != nil {
+		if tryWebSocket(conn, true) {
+			return
+		}
+	}
+
+	// Caso contrário, tenta WebSocket normal
 	if tryWebSocket(conn, false) {
 		return
 	}
 
-	// Para as próximas tentativas, precisamos criar conexões independentes,
-	// pois a anterior pode ter lido dados. Aqui simplificamos e encerramos se falhar.
-	// Em um proxy real, isso precisaria ser melhor implementado.
-
-	// Tenta WebSocket com TLS
-	if tryWebSocket(conn, true) {
-		return
-	}
-
-	// Tenta SOCKS5
-	if trySocks(conn) {
-		return
-	}
-
-	// Por fim, tenta TCP simples
+	// Fallback TCP simples
 	tryTCP(conn)
 }
 
-// Tenta redirecionar como WebSocket, diferenciando TLS ou não
+// Faz peek (leitura sem consumir) dos primeiros n bytes, usando PeekConn temporário
+func peekInitialBytes(conn net.Conn, n int) ([]byte, error) {
+	// Use bufio.Reader and Peek without consuming data in the main conn
+	reader := bufio.NewReader(conn)
+	peeked, err := reader.Peek(n)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return peeked, nil
+}
+
+// Overwrite tryWebSocket para receber conn agora bufio.Reader disponível
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
-	initialData, err := readInitialData(conn)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro na leitura inicial para WebSocket (TLS=%v): %v", useTLS, err))
+	// Usar bufio.Reader para suportar peek correto
+	bufReader := bufio.NewReader(conn)
+	// Ler primeiro request
+	reqLines := []string{}
+	for {
+		line, err := bufReader.ReadString('\n')
+		if err != nil {
+			logMessage(fmt.Sprintf("Erro lendo linha em WebSocket (TLS=%v): %v", useTLS, err))
+			return false
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break
+		}
+		reqLines = append(reqLines, line)
+	}
+
+	if len(reqLines) == 0 {
 		return false
 	}
+
+	// Reconstruir o request para envio ao handshake
+	request := strings.Join(reqLines, "\r\n") + "\r\n\r\n"
 
 	if useTLS {
 		if sslConfig == nil {
 			logMessage("SSL Config não definida, não pode usar TLS para WebSocket")
 			return false
 		}
-		tlsConn := tls.Server(&peekConn{Conn: conn, peeked: []byte(initialData)}, sslConfig)
+		tlsConn := tls.Server(&connWithBuf{Conn: conn, reader: bufReader}, sslConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			logMessage(fmt.Sprintf("Erro handshake TLS para WebSocket: %v", err))
 			return false
 		}
 		conn = tlsConn
 	} else {
-		conn = &peekConn{Conn: conn, peeked: []byte(initialData)}
+		conn = &connWithBuf{Conn: conn, reader: bufReader}
 	}
 
-	// Checa se a requisição HTTP é para WebSocket
-	if strings.HasPrefix(initialData, "GET") || strings.HasPrefix(initialData, "CONNECT") {
-		err := handleWebSocketHandshake(conn, initialData)
+	if strings.HasPrefix(reqLines[0], "GET") || strings.HasPrefix(reqLines[0], "CONNECT") {
+		err := handleWebSocketHandshake(conn, request)
 		if err != nil {
 			logMessage("Erro no handshake WebSocket: " + err.Error())
 			return false
@@ -170,7 +219,15 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	return false
 }
 
-// Tenta redirecionar como SOCKS5
+type connWithBuf struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *connWithBuf) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
+}
+
 func trySocks(conn net.Conn) bool {
 	initialData, err := readInitialData(conn)
 	if err != nil {
@@ -179,9 +236,9 @@ func trySocks(conn net.Conn) bool {
 	}
 
 	if len(initialData) > 0 && initialData[0] == 0x05 {
-		resp := "HTTP/1.1 200 OK\r\n\r\n"
+		resp := "HTTP/1.1 200 Switching Protocols\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
+			logMessage("Erro enviando resposta 200 Switching Protocols para SOCKS5: " + err.Error())
 			return false
 		}
 		logMessage("Conexão SOCKS5 estabelecida, redirecionando para SSH")
@@ -191,7 +248,6 @@ func trySocks(conn net.Conn) bool {
 	return false
 }
 
-// Tenta redirecionar como TCP simples (fallback)
 func tryTCP(conn net.Conn) {
 	logMessage("Tentativa de conexão TCP simples, redirecionando para SSH")
 	resp := "HTTP/1.1 200 OK\r\n\r\n"
@@ -199,7 +255,6 @@ func tryTCP(conn net.Conn) {
 	sshRedirect(conn)
 }
 
-// redireciona para o OpenSSH na máquina local na porta 22
 func sshRedirect(clientConn net.Conn) {
 	serverConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
@@ -223,7 +278,6 @@ func sshRedirect(clientConn net.Conn) {
 	logMessage("Conexão proxy finalizada para SSH")
 }
 
-// Funções auxiliares para systemd e menu, mesmas anteriores
 func systemdServicePath(port int) string {
 	return fmt.Sprintf("%s/proxyws@%d.service", serviceDir, port)
 }

@@ -588,4 +588,3 @@ func startProxy(port int) {
 	logMessage(fmt.Sprintf("Proxy encerrado na porta %d", port))
 	os.Remove(pidFile)
 }
-

@@ -27,8 +27,7 @@ const (
 var (
 	logMutex  sync.Mutex
 	sslConfig *tls.Config
-	// canal para controlar encerramento do proxy
-	stopChan chan struct{}
+	stopChan  chan struct{}
 )
 
 func logMessage(msg string) {
@@ -494,7 +493,7 @@ func main() {
 	for {
 		clearScreen()
 		fmt.Println("============================")
-		fmt.Println("      Proxy Cloud JF")
+		fmt.Println("      Proxy Euro Verção 1.0")
 		fmt.Println("============================")
 		fmt.Println("== 1 - Abrir nova porta    ==")
 		fmt.Println("== 2 - Fechar porta        ==")
@@ -598,10 +597,12 @@ func startProxy(port int) {
 
 	// Goroutine para captura de sinais
 	go func() {
-		sig := <-sigCh
-		logMessage(fmt.Sprintf("Sinal %v recebido, ignorando para manter proxy ativo", sig))
-		// Não fecha o listener ou proxy para manter sempre escutando
-		// Se desejar um desligamento controlado, implementar flag ou outro mecanismo
+		for {
+			sig := <-sigCh
+			logMessage(fmt.Sprintf("Sinal %v recebido, ignorando para manter proxy ativo", sig))
+			// Não fecha o listener ou proxy para manter sempre escutando
+			// Se desejar um desligamento controlado, implementar flag ou outro mecanismo
+		}
 	}()
 
 	for {

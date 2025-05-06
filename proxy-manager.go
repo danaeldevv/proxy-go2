@@ -189,26 +189,21 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 
 	// Verificar Upgrade header de forma flexível e Connection header para permitir Keep-Alive
 	lowerData := strings.ToLower(initialData)
-	if strings.Contains(lowerData, "upgrade: websocket") ||
-		strings.Contains(lowerData, "connection: upgrade") ||
-		strings.Contains(lowerData, "connection: keep-alive") {
-		// Responder upgrade ou connection accepted, ou simplesmente proxyar
-		// Ainda responde 101 Switching Protocols se Upgrade websocket detectado
-		if strings.Contains(lowerData, "upgrade: websocket") {
-			resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-			if _, err := conn.Write([]byte(resp)); err != nil {
-				logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
-				return false
-			}
-			logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
-			sshRedirect(conn)
-			return true
+	if strings.Contains(lowerData, "upgrade: websocket") {
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		if _, err := conn.Write([]byte(resp)); err != nil {
+			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
+			return false
 		}
-
-		// Caso diferente, responder 200 Connection Established para payloads HTTP genéricos
+		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
+		sshRedirect(conn)
+		return true
+	} else if strings.Contains(lowerData, "connection: upgrade") ||
+		strings.Contains(lowerData, "connection: keep-alive") {
+		// Responder 200 Connection Established para outros casos de conexão com cabeçalhos Upgrade ou Keep-Alive
 		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 HTTP WebSocket: " + err.Error())
+			logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
 			return false
 		}
 		logMessage(fmt.Sprintf("Conexão HTTP estabelecida (TLS=%v)", useTLS))
@@ -216,11 +211,10 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		return true
 	}
 
-	// Caso seja uma requisição HTTP normal (qualquer método), responder 200 Connection Established e redirecionar para SSH
 	if isHTTPMethod(initialData) {
 		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 HTTP WebSocket: " + err.Error())
+			logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
 			return false
 		}
 		logMessage(fmt.Sprintf("Conexão HTTP estabelecida (TLS=%v)", useTLS))

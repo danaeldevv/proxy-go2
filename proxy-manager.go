@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -68,57 +70,70 @@ func readInitialData(conn net.Conn) (string, error) {
 	return string(buf[:n]), nil
 }
 
+// computa o valor do Sec-WebSocket-Accept a partir do Sec-WebSocket-Key
+func computeAcceptKey(secWebSocketKey string) string {
+	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	h := sha1.New()
+	h.Write([]byte(secWebSocketKey + magicGUID))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+// responde corretamente o handshake WebSocket com o cabeçalho Sec-WebSocket-Accept
+func handleWebSocketHandshake(conn net.Conn, request string) error {
+	lines := strings.Split(request, "\r\n")
+	var secWebSocketKey string
+
+	for _, line := range lines {
+		if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				secWebSocketKey = strings.TrimSpace(parts[1])
+				break
+			}
+		}
+	}
+	if secWebSocketKey == "" {
+		return fmt.Errorf("Sec-WebSocket-Key não encontrado")
+	}
+	acceptKey := computeAcceptKey(secWebSocketKey)
+	response := "HTTP/1.1 101 Switching Protocols\r\n"
+	response += "Upgrade: websocket\r\n"
+	response += "Connection: Upgrade\r\n"
+	response += "Sec-WebSocket-Accept: " + acceptKey + "\r\n"
+	response += "\r\n"
+
+	_, err := conn.Write([]byte(response))
+	return err
+}
+
 // Tenta redirecionar a conexão usando diferentes protocolos
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
-	// Guardar a conexão original para reutilizar nas tentativas
-	originalConn := conn
-
 	// Tenta WebSocket sem TLS
-	if tryWebSocket(originalConn, false) {
+	if tryWebSocket(conn, false) {
 		return
 	}
 
-	// Resetar conexão para nova tentativa
-	conn1, conn2 := net.Pipe()
-	go func() {
-		io.Copy(conn1, originalConn)
-		conn1.Close()
-	}()
-	originalConn = conn2
+	// Para as próximas tentativas, precisamos criar conexões independentes,
+	// pois a anterior pode ter lido dados. Aqui simplificamos e encerramos se falhar.
+	// Em um proxy real, isso precisaria ser melhor implementado.
 
 	// Tenta WebSocket com TLS
-	if tryWebSocket(originalConn, true) {
+	if tryWebSocket(conn, true) {
 		return
 	}
-
-	// Resetar conexão para nova tentativa
-	conn3, conn4 := net.Pipe()
-	go func() {
-		io.Copy(conn3, originalConn)
-		conn3.Close()
-	}()
-	originalConn = conn4
 
 	// Tenta SOCKS5
-	if trySocks(originalConn) {
+	if trySocks(conn) {
 		return
 	}
 
-	// Resetar conexão para nova tentativa
-	conn5, conn6 := net.Pipe()
-	go func() {
-		io.Copy(conn5, originalConn)
-		conn5.Close()
-	}()
-	originalConn = conn6
-
-	// Tenta TCP simples
-	tryTCP(originalConn)
+	// Por fim, tenta TCP simples
+	tryTCP(conn)
 }
 
-// Tenta redirecionar como WebSocket
+// Tenta redirecionar como WebSocket, diferenciando TLS ou não
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	initialData, err := readInitialData(conn)
 	if err != nil {
@@ -137,19 +152,21 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 			return false
 		}
 		conn = tlsConn
+	} else {
+		conn = &peekConn{Conn: conn, peeked: []byte(initialData)}
 	}
 
+	// Checa se a requisição HTTP é para WebSocket
 	if strings.HasPrefix(initialData, "GET") || strings.HasPrefix(initialData, "CONNECT") {
-		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
+		err := handleWebSocketHandshake(conn, initialData)
+		if err != nil {
+			logMessage("Erro no handshake WebSocket: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
+		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v) e redirecionando para SSH", useTLS))
 		sshRedirect(conn)
 		return true
 	}
-
 	return false
 }
 
@@ -167,22 +184,23 @@ func trySocks(conn net.Conn) bool {
 			logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
 			return false
 		}
-		logMessage("Conexão SOCKS5 estabelecida")
+		logMessage("Conexão SOCKS5 estabelecida, redirecionando para SSH")
 		sshRedirect(conn)
 		return true
 	}
-
 	return false
 }
 
-// Tenta redirecionar como TCP simples
+// Tenta redirecionar como TCP simples (fallback)
 func tryTCP(conn net.Conn) {
-	logMessage("Tentativa de conexão TCP simples")
+	logMessage("Tentativa de conexão TCP simples, redirecionando para SSH")
+	resp := "HTTP/1.1 200 OK\r\n\r\n"
+	_, _ = conn.Write([]byte(resp))
 	sshRedirect(conn)
 }
 
-// Redireciona a conexão para o servidor SSH
-func sshRedirect(conn net.Conn) {
+// redireciona para o OpenSSH na máquina local na porta 22
+func sshRedirect(clientConn net.Conn) {
 	serverConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
 		logMessage(fmt.Sprintf("Erro ao conectar ao servidor SSH: %v", err))
@@ -194,23 +212,22 @@ func sshRedirect(conn net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		io.Copy(serverConn, conn)
+		io.Copy(serverConn, clientConn)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(conn, serverConn)
+		io.Copy(clientConn, serverConn)
 	}()
 	wg.Wait()
 
-	logMessage("Conexão redirecionada para o servidor SSH finalizada")
+	logMessage("Conexão proxy finalizada para SSH")
 }
 
-// Arquivo systemd service path
+// Funções auxiliares para systemd e menu, mesmas anteriores
 func systemdServicePath(port int) string {
 	return fmt.Sprintf("%s/proxyws@%d.service", serviceDir, port)
 }
 
-// Criação do arquivo systemd service para o proxy
 func createSystemdService(port int, execPath string) error {
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=ProxyWS na porta %d

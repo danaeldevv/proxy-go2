@@ -139,8 +139,9 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		conn = tlsConn
 	}
 
-	if strings.HasPrefix(initialData, "GET") || strings.HasPrefix(initialData, "CONNECT") {
-		resp := "HTTP/1.1 101 ProxyEuro\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+	// Identificar se é WebSocket verificando se está presente o header Upgrade: websocket
+	if strings.Contains(strings.ToLower(initialData), "upgrade: websocket") {
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
 			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
 			return false
@@ -150,6 +151,30 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		return true
 	}
 
+	// Caso seja uma requisição HTTP normal (qualquer método), responder 200 Connection Established e redirecionar para SSH
+	if isHTTPMethod(initialData) {
+		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
+		if _, err := conn.Write([]byte(resp)); err != nil {
+			logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
+			return false
+		}
+		logMessage(fmt.Sprintf("Conexão HTTP estabelecida (TLS=%v)", useTLS))
+		sshRedirect(conn)
+		return true
+	}
+
+	return false
+}
+
+func isHTTPMethod(data string) bool {
+	data = strings.ToUpper(data)
+	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT"}
+
+	for _, m := range methods {
+		if strings.HasPrefix(data, m+" ") {
+			return true
+		}
+	}
 	return false
 }
 

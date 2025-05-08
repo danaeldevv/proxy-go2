@@ -58,26 +58,15 @@ func (p *peekConn) Read(b []byte) (int, error) {
 }
 
 // leitura inicial com timeout e captura dos dados para análise
-func readInitialData(conn net.Conn) (string, error) {
+func readInitialData(conn net.Conn) (string, []byte, error) {
 	buf := make([]byte, 8192)
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	n, err := conn.Read(buf)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	conn.SetReadDeadline(time.Time{}) // limpa deadline
-	return string(buf[:n]), nil
-}
-
-func isHTTPMethod(data string) bool {
-	data = strings.ToUpper(data)
-	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT", "ACL"}
-	for _, m := range methods {
-		if strings.HasPrefix(data, m+" ") {
-			return true
-		}
-	}
-	return false
+	return string(buf[:n]), buf[:n], nil
 }
 
 // Função auxiliar para handshake TLS e obter conn decorada ou falha
@@ -92,115 +81,60 @@ func tryTLSHandshake(conn net.Conn) (net.Conn, error) {
 	return tlsConn, nil
 }
 
-// Tenta redirecionar a conexão usando diferentes protocolos com suporte TLS
+// Função principal que detecta se conexão é WebSocket (wss) ou SOCKS5 e encaminha
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
-	originalConn := conn
-
-	resetConn := func(c net.Conn) net.Conn {
-		conn1, conn2 := net.Pipe()
-		go func() {
-			io.Copy(conn1, c)
-			conn1.Close()
-		}()
-		return conn2
-	}
-
-	// Protocolos que suportam TLS: WebSocket, MQTT, XMPP, HTTP/2, AMQP
-	// Para cada protocolo: tentar TLS primeiro se sslConfig != nil, senão tentar sem TLS diretamente.
-
-	// WebSocket
-	if tryWebSocket(originalConn, true) {
-		return
-	}
-	if tryWebSocket(originalConn, false) {
+	// Primeiro tenta WebSocket com TLS (WSS)
+	if tryWebSocket(conn, true) {
 		return
 	}
 
-	originalConn = resetConn(originalConn)
-
-	// MQTT
-	if tryMQTT(originalConn, true) {
-		return
-	}
-	if tryMQTT(originalConn, false) {
+	// Como falhou no WSS, tenta SOCKS5 sem TLS
+	if trySocks(conn) {
 		return
 	}
 
-	originalConn = resetConn(originalConn)
-
-	// XMPP
-	if tryXMPP(originalConn, true) {
-		return
-	}
-	if tryXMPP(originalConn, false) {
-		return
-	}
-
-	originalConn = resetConn(originalConn)
-
-	// HTTP/2
-	if tryHTTP2(originalConn, true) {
-		return
-	}
-	if tryHTTP2(originalConn, false) {
-		return
-	}
-
-	originalConn = resetConn(originalConn)
-
-	// AMQP
-	if tryAMQP(originalConn, true) {
-		return
-	}
-	if tryAMQP(originalConn, false) {
-		return
-	}
-
-	originalConn = resetConn(originalConn)
-
-	// SOCKS5 não tem suporte TLS tradicional, tenta apenas sem TLS
-	if trySocks(originalConn) {
-		return
-	}
-
-	originalConn = resetConn(originalConn)
-
-	// TCP simples
-	tryTCP(originalConn)
+	// Se não encaixar em nenhum, tenta só TCP simples (encaminha)
+	tryTCP(conn)
 }
 
-// Tenta redirecionar como WebSocket
+// Tenta redirecionar como WebSocket seguro (WSS)
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
-	initialData, err := readInitialData(conn)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro leitura inicial WebSocket (TLS=%v): %v", useTLS, err))
-		return false
-	}
+	var initialData string
+	var initialBytes []byte
+	var err error
 
 	if useTLS {
-		tlsConn, err := tryTLSHandshake(&peekConn{Conn: conn, peeked: []byte(initialData)})
+		// Tentativa de handshake TLS na conexão
+		tlsConn, err := tryTLSHandshake(conn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro handshake TLS WebSocket: %v", err))
 			return false
 		}
-		conn = tlsConn
 
-		// Releitura após handshake TLS
-		initialData, err = readInitialData(conn)
+		// leitura pós-handshake TLS
+		initialData, initialBytes, err = readInitialData(tlsConn)
 		if err != nil {
-			logMessage(fmt.Sprintf("Erro leitura pós-handshake TLS WebSocket: %v", err))
+			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket pós-handshake TLS: %v", err))
+			return false
+		}
+		conn = tlsConn
+	} else {
+		// Se não usar TLS (não deve ocorrer para WSS), apenas ler dados
+		initialData, initialBytes, err = readInitialData(conn)
+		if err != nil {
+			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket: %v", err))
 			return false
 		}
 	}
 
-	// Análise mais robusta dos headers HTTP
+	// Análise robusta dos headers HTTP para verificar Upgrade Websocket
 	scanner := bufio.NewScanner(strings.NewReader(initialData))
 	headers := map[string]string{}
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" { // Fim dos headers
+		if line == "" { // fim do headers
 			break
 		}
 		colonIndex := strings.Index(line, ":")
@@ -211,7 +145,6 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		}
 	}
 
-	// Check if Upgrade header == websocket and Connection header contains upgrade
 	upg, upgOk := headers["upgrade"]
 	connHeader, connOk := headers["connection"]
 
@@ -221,169 +154,7 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
-		sshRedirect(conn)
-		return true
-	}
-
-	// Caso tenha conexão upgrade mas não websocket - pode ser outro protocolo que espera 200 OK
-	if connOk && strings.Contains(connHeader, "upgrade") {
-		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
-			return false
-		}
-		logMessage(fmt.Sprintf("Conexão HTTP estabelecida com upgrade (TLS=%v)", useTLS))
-		sshRedirect(conn)
-		return true
-	}
-
-	if isHTTPMethod(initialData) {
-		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
-			return false
-		}
-		logMessage(fmt.Sprintf("Conexão HTTP estabelecida (TLS=%v)", useTLS))
-		sshRedirect(conn)
-		return true
-	}
-
-	return false
-}
-
-// Tenta redirecionar como MQTT
-func tryMQTT(conn net.Conn, useTLS bool) bool {
-	initialBuf := make([]byte, 8192)
-	conn.SetReadDeadline(time.Now().Add(readTimeout))
-	n, err := conn.Read(initialBuf)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro leitura inicial MQTT (TLS=%v): %v", useTLS, err))
-		return false
-	}
-	conn.SetReadDeadline(time.Time{})
-
-	initialData := initialBuf[:n]
-
-	if useTLS {
-		tlsConn, err := tryTLSHandshake(&peekConn{Conn: conn, peeked: initialData})
-		if err != nil {
-			logMessage(fmt.Sprintf("Erro handshake TLS MQTT: %v", err))
-			return false
-		}
-		conn = tlsConn
-	}
-
-	if len(initialData) > 0 && initialData[0] == 0x10 { // MQTT Connect Packet
-		resp := "HTTP/1.1 200 OK\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 MQTT: " + err.Error())
-			return false
-		}
-		logMessage(fmt.Sprintf("Conexão MQTT estabelecida (TLS=%v)", useTLS))
-		sshRedirect(conn)
-		return true
-	}
-
-	return false
-}
-
-// Tenta redirecionar como XMPP
-func tryXMPP(conn net.Conn, useTLS bool) bool {
-	initialData, err := readInitialData(conn)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro leitura inicial XMPP (TLS=%v): %v", useTLS, err))
-		return false
-	}
-
-	if useTLS {
-		tlsConn, err := tryTLSHandshake(&peekConn{Conn: conn, peeked: []byte(initialData)})
-		if err != nil {
-			logMessage(fmt.Sprintf("Erro handshake TLS XMPP: %v", err))
-			return false
-		}
-		conn = tlsConn
-	}
-
-	if strings.HasPrefix(initialData, "<stream:stream") {
-		resp := "HTTP/1.1 200 OK\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 XMPP: " + err.Error())
-			return false
-		}
-		logMessage(fmt.Sprintf("Conexão XMPP estabelecida (TLS=%v)", useTLS))
-		sshRedirect(conn)
-		return true
-	}
-
-	return false
-}
-
-// Tenta redirecionar como HTTP/2
-func tryHTTP2(conn net.Conn, useTLS bool) bool {
-	initialBuf := make([]byte, 8192)
-	conn.SetReadDeadline(time.Now().Add(readTimeout))
-	n, err := conn.Read(initialBuf)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro leitura inicial HTTP/2 (TLS=%v): %v", useTLS, err))
-		return false
-	}
-	conn.SetReadDeadline(time.Time{})
-
-	initialData := initialBuf[:n]
-
-	if useTLS {
-		tlsConn, err := tryTLSHandshake(&peekConn{Conn: conn, peeked: initialData})
-		if err != nil {
-			logMessage(fmt.Sprintf("Erro handshake TLS HTTP/2: %v", err))
-			return false
-		}
-		conn = tlsConn
-	}
-
-	if len(initialData) > 0 && initialData[0] == 0x50 { // HTTP/2 Magic Byte 'P'
-		resp := "HTTP/1.1 200 OK\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 HTTP/2: " + err.Error())
-			return false
-		}
-		logMessage(fmt.Sprintf("Conexão HTTP/2 estabelecida (TLS=%v)", useTLS))
-		sshRedirect(conn)
-		return true
-	}
-
-	return false
-}
-
-// Tenta redirecionar como AMQP
-func tryAMQP(conn net.Conn, useTLS bool) bool {
-	initialBuf := make([]byte, 8192)
-	conn.SetReadDeadline(time.Now().Add(readTimeout))
-	n, err := conn.Read(initialBuf)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro leitura inicial AMQP (TLS=%v): %v", useTLS, err))
-		return false
-	}
-	conn.SetReadDeadline(time.Time{})
-
-	initialData := initialBuf[:n]
-
-	if useTLS {
-		tlsConn, err := tryTLSHandshake(&peekConn{Conn: conn, peeked: initialData})
-		if err != nil {
-			logMessage(fmt.Sprintf("Erro handshake TLS AMQP: %v", err))
-			return false
-		}
-		conn = tlsConn
-	}
-
-	if len(initialData) > 0 && initialData[0] == 0x0A { // AMQP protocol header
-		resp := "HTTP/1.1 200 OK\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 AMQP: " + err.Error())
-			return false
-		}
-		logMessage(fmt.Sprintf("Conexão AMQP estabelecida (TLS=%v)", useTLS))
+		logMessage(fmt.Sprintf("Conexão WSS (WebSocket Secure) estabelecida"))
 		sshRedirect(conn)
 		return true
 	}
@@ -393,7 +164,7 @@ func tryAMQP(conn net.Conn, useTLS bool) bool {
 
 // Tenta redirecionar como SOCKS5 (sem TLS)
 func trySocks(conn net.Conn) bool {
-	initialData, err := readInitialData(conn)
+	initialData, _, err := readInitialData(conn)
 	if err != nil {
 		logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5: %v", err))
 		return false
@@ -413,7 +184,7 @@ func trySocks(conn net.Conn) bool {
 	return false
 }
 
-// TCP simples sem TLS
+// TCP simples sem TLS (encaminha direto)
 func tryTCP(conn net.Conn) {
 	logMessage("Tentativa de conexão TCP simples")
 	sshRedirect(conn)
@@ -453,7 +224,7 @@ func systemdServicePath(port int) string {
 // Cria arquivo de service systemd
 func createSystemdService(port int, execPath string) error {
 	serviceContent := fmt.Sprintf(`[Unit]
-Description=ProxyWS na porta %d
+Description=ProxyWS na porta %d (WebSocket Security + SOCKS5)
 After=network.target
 
 [Service]
@@ -520,7 +291,7 @@ func main() {
 	for {
 		clearScreen()
 		fmt.Println("============================")
-		fmt.Println("      Proxy Euro Verção 1.1")
+		fmt.Println("      Proxy Euro Verção 1.2")
 		fmt.Println("============================")
 		fmt.Println("== 1 - Abrir nova porta    ==")
 		fmt.Println("== 2 - Fechar porta        ==")
@@ -559,7 +330,7 @@ func main() {
 				scanner.Scan()
 				continue
 			}
-			fmt.Printf("✅ Proxy iniciado na porta %d\n", port)
+			fmt.Printf("✅ Proxy iniciado na porta %d (WebSocket Security + SOCKS5)\n", port)
 			fmt.Println("Executando em background via systemd. Pressione Enter...")
 			scanner.Scan()
 		case "2":
@@ -616,7 +387,7 @@ func startProxy(port int) {
 		logMessage(fmt.Sprintf("Falha ao gravar PID file: %v", err))
 	}
 
-	logMessage(fmt.Sprintf("Proxy iniciado na porta %d", port))
+	logMessage(fmt.Sprintf("Proxy iniciado na porta %d (WebSocket Security + SOCKS5)", port))
 
 	// Criar canal para sinais de interrupção
 	sigCh := make(chan os.Signal, 1)
@@ -649,4 +420,3 @@ func startProxy(port int) {
 	logMessage(fmt.Sprintf("Proxy encerrado na porta %d", port))
 	os.Remove(pidFile)
 }
-

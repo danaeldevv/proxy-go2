@@ -108,7 +108,7 @@ func tryProtocols(conn net.Conn) {
 	}
 
 	// Protocolos que suportam TLS: WebSocket, MQTT, XMPP, HTTP/2, AMQP
-	// Para cada protocolo: tentar TLS primeiro se sslConfig != nil, senão tentar sem TLS directly.
+	// Para cada protocolo: tentar TLS primeiro se sslConfig != nil, senão tentar sem TLS diretamente.
 
 	// WebSocket
 	if tryWebSocket(originalConn, true) {
@@ -186,11 +186,36 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 			return false
 		}
 		conn = tlsConn
+
+		// Releitura após handshake TLS
+		initialData, err = readInitialData(conn)
+		if err != nil {
+			logMessage(fmt.Sprintf("Erro leitura pós-handshake TLS WebSocket: %v", err))
+			return false
+		}
 	}
 
-	// Verificar Upgrade header de forma flexível e Connection header para permitir Keep-Alive
-	lowerData := strings.ToLower(initialData)
-	if strings.Contains(lowerData, "upgrade: websocket") {
+	// Análise mais robusta dos headers HTTP
+	scanner := bufio.NewScanner(strings.NewReader(initialData))
+	headers := map[string]string{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" { // Fim dos headers
+			break
+		}
+		colonIndex := strings.Index(line, ":")
+		if colonIndex > 0 {
+			key := strings.ToLower(strings.TrimSpace(line[:colonIndex]))
+			value := strings.ToLower(strings.TrimSpace(line[colonIndex+1:]))
+			headers[key] = value
+		}
+	}
+
+	// Check if Upgrade header == websocket and Connection header contains upgrade
+	upg, upgOk := headers["upgrade"]
+	connHeader, connOk := headers["connection"]
+
+	if upgOk && upg == "websocket" && connOk && strings.Contains(connHeader, "upgrade") {
 		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
 			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
@@ -199,14 +224,16 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		logMessage(fmt.Sprintf("Conexão WebSocket estabelecida (TLS=%v)", useTLS))
 		sshRedirect(conn)
 		return true
-	} else if strings.Contains(lowerData, "connection: upgrade") ||
-		strings.Contains(lowerData, "connection: keep-alive") {
+	}
+
+	// Caso tenha conexão upgrade mas não websocket - pode ser outro protocolo que espera 200 OK
+	if connOk && strings.Contains(connHeader, "upgrade") {
 		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
 			logMessage("Erro enviando resposta 200 HTTP: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão HTTP estabelecida (TLS=%v)", useTLS))
+		logMessage(fmt.Sprintf("Conexão HTTP estabelecida com upgrade (TLS=%v)", useTLS))
 		sshRedirect(conn)
 		return true
 	}
@@ -622,3 +649,4 @@ func startProxy(port int) {
 	logMessage(fmt.Sprintf("Proxy encerrado na porta %d", port))
 	os.Remove(pidFile)
 }
+

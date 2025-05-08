@@ -71,7 +71,7 @@ func readInitialData(conn net.Conn) (string, error) {
 
 func isHTTPMethod(data string) bool {
 	data = strings.ToUpper(data)
-	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT"}
+	methods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "CONNECT", "ACL"}
 	for _, m := range methods {
 		if strings.HasPrefix(data, m+" ") {
 			return true

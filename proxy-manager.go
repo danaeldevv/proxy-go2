@@ -58,15 +58,15 @@ func (p *peekConn) Read(b []byte) (int, error) {
 }
 
 // leitura inicial com timeout e captura dos dados para análise
-func readInitialData(conn net.Conn) (string, []byte, error) {
+func readInitialData(conn net.Conn) (string, error) {
 	buf := make([]byte, 8192)
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	n, err := conn.Read(buf)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	conn.SetReadDeadline(time.Time{}) // limpa deadline
-	return string(buf[:n]), buf[:n], nil
+	return string(buf[:n]), nil
 }
 
 // Função auxiliar para handshake TLS e obter conn decorada ou falha
@@ -102,7 +102,6 @@ func tryProtocols(conn net.Conn) {
 // Tenta redirecionar como WebSocket seguro (WSS)
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	var initialData string
-	var initialBytes []byte
 	var err error
 
 	if useTLS {
@@ -114,7 +113,7 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		}
 
 		// leitura pós-handshake TLS
-		initialData, initialBytes, err = readInitialData(tlsConn)
+		initialData, err = readInitialData(tlsConn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket pós-handshake TLS: %v", err))
 			return false
@@ -122,7 +121,7 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		conn = tlsConn
 	} else {
 		// Se não usar TLS (não deve ocorrer para WSS), apenas ler dados
-		initialData, initialBytes, err = readInitialData(conn)
+		initialData, err = readInitialData(conn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket: %v", err))
 			return false
@@ -164,13 +163,14 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 
 // Tenta redirecionar como SOCKS5 (sem TLS)
 func trySocks(conn net.Conn) bool {
-	initialData, _, err := readInitialData(conn)
+	initialData, err := readInitialData(conn)
 	if err != nil {
 		logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5: %v", err))
 		return false
 	}
 
-	if len(initialData) > 0 && initialData[0] == 0x05 {
+	dataBytes := []byte(initialData)
+	if len(dataBytes) > 0 && dataBytes[0] == 0x05 {
 		resp := "HTTP/1.1 200 OK ProxyEuro\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
 			logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
@@ -291,7 +291,7 @@ func main() {
 	for {
 		clearScreen()
 		fmt.Println("============================")
-		fmt.Println("      Proxy Euro Verção 1.2")
+		fmt.Println("      Proxy Euro Verção 1.0")
 		fmt.Println("============================")
 		fmt.Println("== 1 - Abrir nova porta    ==")
 		fmt.Println("== 2 - Fechar porta        ==")

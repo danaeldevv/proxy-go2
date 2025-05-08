@@ -81,7 +81,7 @@ func tryTLSHandshake(conn net.Conn) (net.Conn, error) {
 	return tlsConn, nil
 }
 
-// Função principal que detecta se conexão é WebSocket (wss) ou SOCKS5 e encaminha
+// Função principal que detecta se conexão é WebSocket (wss) ou SOCKS5 (com ou sem TLS) e encaminha
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
@@ -90,12 +90,17 @@ func tryProtocols(conn net.Conn) {
 		return
 	}
 
-	// Como falhou no WSS, tenta SOCKS5 sem TLS
-	if trySocks(conn) {
+	// Se falhar WSS, tenta SOCKS5 com TLS
+	if trySocks(conn, true) {
 		return
 	}
 
-	// Se não encaixar em nenhum, tenta só TCP simples (encaminha)
+	// Se falhar SOCKS5 TLS, tenta SOCKS5 sem TLS
+	if trySocks(conn, false) {
+		return
+	}
+
+	// Caso não reconhecido, tenta TCP simples
 	tryTCP(conn)
 }
 
@@ -105,14 +110,11 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	var err error
 
 	if useTLS {
-		// Tentativa de handshake TLS na conexão
 		tlsConn, err := tryTLSHandshake(conn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro handshake TLS WebSocket: %v", err))
 			return false
 		}
-
-		// leitura pós-handshake TLS
 		initialData, err = readInitialData(tlsConn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket pós-handshake TLS: %v", err))
@@ -120,7 +122,6 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		}
 		conn = tlsConn
 	} else {
-		// Se não usar TLS (não deve ocorrer para WSS), apenas ler dados
 		initialData, err = readInitialData(conn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket: %v", err))
@@ -128,12 +129,11 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		}
 	}
 
-	// Análise robusta dos headers HTTP para verificar Upgrade Websocket
 	scanner := bufio.NewScanner(strings.NewReader(initialData))
 	headers := map[string]string{}
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" { // fim do headers
+		if line == "" { // fim headers
 			break
 		}
 		colonIndex := strings.Index(line, ":")
@@ -148,39 +148,56 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	connHeader, connOk := headers["connection"]
 
 	if upgOk && upg == "websocket" && connOk && strings.Contains(connHeader, "upgrade") {
-		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		// Resposta conforme requisitado
+		resp := "HTTP/1.1 101 ProxyEuro\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 101 WebSocket: " + err.Error())
+			logMessage("Erro enviando resposta 101 ProxyEuro WebSocket: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão WSS (WebSocket Secure) estabelecida"))
+		logMessage("Conexão WSS (WebSocket Secure) estabelecida com resposta HTTP/1.1 101 ProxyEuro")
 		sshRedirect(conn)
 		return true
 	}
-
 	return false
 }
 
-// Tenta redirecionar como SOCKS5 (sem TLS)
-func trySocks(conn net.Conn) bool {
-	initialData, err := readInitialData(conn)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5: %v", err))
-		return false
+// Tenta redirecionar como SOCKS5, com ou sem TLS conforme parâmetro
+func trySocks(conn net.Conn, useTLS bool) bool {
+	var err error
+	var initialData string
+
+	if useTLS {
+		tlsConn, err := tryTLSHandshake(conn)
+		if err != nil {
+			logMessage(fmt.Sprintf("Erro handshake TLS SOCKS5: %v", err))
+			return false
+		}
+		initialData, err = readInitialData(tlsConn)
+		if err != nil {
+			logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5 pós-handshake TLS: %v", err))
+			return false
+		}
+		conn = tlsConn
+	} else {
+		initialData, err = readInitialData(conn)
+		if err != nil {
+			logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5: %v", err))
+			return false
+		}
 	}
 
 	dataBytes := []byte(initialData)
 	if len(dataBytes) > 0 && dataBytes[0] == 0x05 {
-		resp := "HTTP/1.1 200 OK ProxyEuro\r\n\r\n"
+		// Resposta conforme requisitado
+		resp := "HTTP/1.1 200 ProxyEuro\r\n\r\n"
 		if _, err := conn.Write([]byte(resp)); err != nil {
-			logMessage("Erro enviando resposta 200 SOCKS5: " + err.Error())
+			logMessage("Erro enviando resposta 200 ProxyEuro SOCKS5: " + err.Error())
 			return false
 		}
-		logMessage("Conexão SOCKS5 estabelecida")
+		logMessage(fmt.Sprintf("Conexão SOCKS5 estabelecida (TLS=%v) com resposta HTTP/1.1 200 ProxyEuro", useTLS))
 		sshRedirect(conn)
 		return true
 	}
-
 	return false
 }
 
@@ -224,7 +241,7 @@ func systemdServicePath(port int) string {
 // Cria arquivo de service systemd
 func createSystemdService(port int, execPath string) error {
 	serviceContent := fmt.Sprintf(`[Unit]
-Description=ProxyWS na porta %d (WebSocket Security + SOCKS5)
+Description=ProxyWS na porta %d (WebSocket Security + SOCKS5 Secure)
 After=network.target
 
 [Service]
@@ -291,7 +308,7 @@ func main() {
 	for {
 		clearScreen()
 		fmt.Println("============================")
-		fmt.Println("      Proxy Euro Verção 1.0")
+		fmt.Println("      Proxy Euro Verção 1.3")
 		fmt.Println("============================")
 		fmt.Println("== 1 - Abrir nova porta    ==")
 		fmt.Println("== 2 - Fechar porta        ==")
@@ -330,7 +347,7 @@ func main() {
 				scanner.Scan()
 				continue
 			}
-			fmt.Printf("✅ Proxy iniciado na porta %d (WebSocket Security + SOCKS5)\n", port)
+			fmt.Printf("✅ Proxy iniciado na porta %d (WebSocket Security + SOCKS5 Secure)\n", port)
 			fmt.Println("Executando em background via systemd. Pressione Enter...")
 			scanner.Scan()
 		case "2":
@@ -387,26 +404,21 @@ func startProxy(port int) {
 		logMessage(fmt.Sprintf("Falha ao gravar PID file: %v", err))
 	}
 
-	logMessage(fmt.Sprintf("Proxy iniciado na porta %d (WebSocket Security + SOCKS5)", port))
+	logMessage(fmt.Sprintf("Proxy iniciado na porta %d (WebSocket Security + SOCKS5 Secure)", port))
 
-	// Criar canal para sinais de interrupção
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Goroutine para captura de sinais
 	go func() {
 		for {
 			sig := <-sigCh
 			logMessage(fmt.Sprintf("Sinal %v recebido, ignorando para manter proxy ativo", sig))
-			// Não fecha o listener ou proxy para manter sempre escutando
-			// Se desejar um desligamento controlado, implementar flag ou outro mecanismo
 		}
 	}()
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			// Se erro temporário, continuar aceitando
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
 				logMessage(fmt.Sprintf("Erro temporário aceitando conexão na porta %d: %v", port, err))
 				time.Sleep(50 * time.Millisecond)

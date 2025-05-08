@@ -21,7 +21,7 @@ const (
 	logFilePath = "/var/log/proxyws.log"
 	pidFileDir  = "/var/run"
 	serviceDir  = "/etc/systemd/system"
-	readTimeout = time.Second // Timeout para leitura inicial
+	readTimeout = 5 * time.Second // Aumentei o timeout para dar tempo de ler dados
 )
 
 var (
@@ -69,7 +69,6 @@ func readInitialData(conn net.Conn) (string, error) {
 	return string(buf[:n]), nil
 }
 
-// Função auxiliar para handshake TLS e obter conn decorada ou falha
 func tryTLSHandshake(conn net.Conn) (net.Conn, error) {
 	if sslConfig == nil {
 		return nil, fmt.Errorf("sslConfig não definido")
@@ -81,30 +80,24 @@ func tryTLSHandshake(conn net.Conn) (net.Conn, error) {
 	return tlsConn, nil
 }
 
-// Função principal que detecta se conexão é WebSocket (wss) ou SOCKS5 (com ou sem TLS) e encaminha
 func tryProtocols(conn net.Conn) {
 	defer conn.Close()
 
-	// Primeiro tenta WebSocket com TLS (WSS)
 	if tryWebSocket(conn, true) {
 		return
 	}
 
-	// Se falhar WSS, tenta SOCKS5 com TLS
 	if trySocks(conn, true) {
 		return
 	}
 
-	// Se falhar SOCKS5 TLS, tenta SOCKS5 sem TLS
 	if trySocks(conn, false) {
 		return
 	}
 
-	// Caso não reconhecido, tenta TCP simples
 	tryTCP(conn)
 }
 
-// Tenta redirecionar como WebSocket seguro (WSS)
 func tryWebSocket(conn net.Conn, useTLS bool) bool {
 	var initialData string
 	var err error
@@ -115,6 +108,7 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 			logMessage(fmt.Sprintf("Erro handshake TLS WebSocket: %v", err))
 			return false
 		}
+
 		initialData, err = readInitialData(tlsConn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket pós-handshake TLS: %v", err))
@@ -129,28 +123,29 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		}
 	}
 
+	// Detecta headers
 	scanner := bufio.NewScanner(strings.NewReader(initialData))
 	headers := map[string]string{}
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" { // fim headers
+		if line == "" {
 			break
 		}
-		colonIndex := strings.Index(line, ":")
-		if colonIndex > 0 {
-			key := strings.ToLower(strings.TrimSpace(line[:colonIndex]))
-			value := strings.ToLower(strings.TrimSpace(line[colonIndex+1:]))
+		colon := strings.Index(line, ":")
+		if colon > 0 {
+			key := strings.ToLower(strings.TrimSpace(line[:colon]))
+			value := strings.ToLower(strings.TrimSpace(line[colon+1:]))
 			headers[key] = value
 		}
 	}
 
 	upg, upgOk := headers["upgrade"]
-	connHeader, connOk := headers["connection"]
+	connHdr, connOk := headers["connection"]
 
-	if upgOk && upg == "websocket" && connOk && strings.Contains(connHeader, "upgrade") {
-		// Resposta conforme requisitado
+	if upgOk && upg == "websocket" && connOk && strings.Contains(connHdr, "upgrade") {
 		resp := "HTTP/1.1 101 ProxyEuro\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
+		_, err = conn.Write([]byte(resp))
+		if err != nil {
 			logMessage("Erro enviando resposta 101 ProxyEuro WebSocket: " + err.Error())
 			return false
 		}
@@ -158,10 +153,10 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		sshRedirect(conn)
 		return true
 	}
+
 	return false
 }
 
-// Tenta redirecionar como SOCKS5, com ou sem TLS conforme parâmetro
 func trySocks(conn net.Conn, useTLS bool) bool {
 	var err error
 	var initialData string
@@ -172,6 +167,7 @@ func trySocks(conn net.Conn, useTLS bool) bool {
 			logMessage(fmt.Sprintf("Erro handshake TLS SOCKS5: %v", err))
 			return false
 		}
+
 		initialData, err = readInitialData(tlsConn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5 pós-handshake TLS: %v", err))
@@ -188,9 +184,9 @@ func trySocks(conn net.Conn, useTLS bool) bool {
 
 	dataBytes := []byte(initialData)
 	if len(dataBytes) > 0 && dataBytes[0] == 0x05 {
-		// Resposta conforme requisitado
 		resp := "HTTP/1.1 200 ProxyEuro\r\n\r\n"
-		if _, err := conn.Write([]byte(resp)); err != nil {
+		_, err = conn.Write([]byte(resp))
+		if err != nil {
 			logMessage("Erro enviando resposta 200 ProxyEuro SOCKS5: " + err.Error())
 			return false
 		}
@@ -201,13 +197,11 @@ func trySocks(conn net.Conn, useTLS bool) bool {
 	return false
 }
 
-// TCP simples sem TLS (encaminha direto)
 func tryTCP(conn net.Conn) {
 	logMessage("Tentativa de conexão TCP simples")
 	sshRedirect(conn)
 }
 
-// Redireciona a conexão para servidor SSH
 func sshRedirect(conn net.Conn) {
 	serverConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
@@ -233,12 +227,10 @@ func sshRedirect(conn net.Conn) {
 	logMessage("Conexão redirecionada para o servidor SSH finalizada")
 }
 
-// Systemd service path
 func systemdServicePath(port int) string {
 	return fmt.Sprintf("%s/proxyws@%d.service", serviceDir, port)
 }
 
-// Cria arquivo de service systemd
 func createSystemdService(port int, execPath string) error {
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=ProxyWS na porta %d (WebSocket Security + SOCKS5 Secure)
@@ -308,7 +300,7 @@ func main() {
 	for {
 		clearScreen()
 		fmt.Println("============================")
-		fmt.Println("      Proxy Euro Verção 1.3")
+		fmt.Println("      Proxy Euro Verção 1.0")
 		fmt.Println("============================")
 		fmt.Println("== 1 - Abrir nova porta    ==")
 		fmt.Println("== 2 - Fechar porta        ==")

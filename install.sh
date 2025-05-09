@@ -40,7 +40,7 @@ rm -f "$INSTALL_DIR/multiproxy"
 
 # Instalar dependências
 echo "Instalando dependências..."
-apt-get update -y
+ apt-get update -y
 if ! command -v git >/dev/null; then
     apt-get install -y git
 fi

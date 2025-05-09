@@ -7,7 +7,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
-#include <sys/epoll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <vector>
@@ -19,13 +18,12 @@
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
-#include <libevent.h>
+#include <asio.hpp> // Inclua a biblioteca asio
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
 
 // Constants
-#define MAX_EVENTS 1024
 #define BUFFER_SIZE 8192
 
 // Globals
@@ -71,12 +69,12 @@ void setup_ssl() {
     SSL_load_error_strings();
     ssl_ctx = SSL_CTX_new(TLS_server_method());
     if (!ssl_ctx) {
-        log("❌ Erro ao configurar SSL.", "ERROR");
+        log("? Erro ao configurar SSL.", "ERROR");
         exit(1);
     }
     if (!SSL_CTX_use_certificate_file(ssl_ctx, "cert.pem", SSL_FILETYPE_PEM) ||
         !SSL_CTX_use_PrivateKey_file(ssl_ctx, "key.pem", SSL_FILETYPE_PEM)) {
-        log("❌ Erro ao carregar certificado SSL.", "ERROR");
+        log("? Erro ao carregar certificado SSL.", "ERROR");
         exit(1);
     }
 }
@@ -84,8 +82,6 @@ void setup_ssl() {
 // Helper: check if connection data indicates TLS (WSS)
 bool is_tls_connection(const char* buffer, size_t len) {
     if(len < 1) return false;
-    // TLS handshake record type is 0x16 and version is 0x0301/0303 etc.
-    // Check first byte is 0x16 (Handshake), and version bytes next, also enough length
     if (buffer[0] == 0x16 && len > 5) {
         int major = buffer[1];
         int minor = buffer[2];
@@ -146,13 +142,13 @@ void handle_websocket(int client_fd, SSL* client_ssl) {
     inet_pton(AF_INET, "127.0.0.1", &ssh_addr.sin_addr);
 
     if (connect(ssh_fd, (sockaddr*)&ssh_addr, sizeof(ssh_addr)) < 0) {
-        log("❌ Erro ao conectar ao OpenSSH.", "ERROR");
+        log("? Erro ao conectar ao OpenSSH.", "ERROR");
         if (client_ssl) SSL_shutdown(client_ssl);
         close(client_fd);
         return;
     }
 
-    log("🔗 WebSocket client conectado e redirecionado para OpenSSH.");
+    log("?? WebSocket client conectado e redirecionado para OpenSSH.");
 
     std::thread t1([client_fd, ssh_fd, client_ssl]() {
         proxy_data(client_fd, ssh_fd, client_ssl, nullptr);
@@ -175,11 +171,9 @@ void handle_websocket(int client_fd, SSL* client_ssl) {
 
 // Handle SOCKS5 proxy connection to SSH
 void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
-    // Respond HTTP 200 OK before SOCKS handshake (per original)
     const char* http_ok = "HTTP/1.1 200 OK\r\n\r\n";
     send(client_fd, http_ok, strlen(http_ok), 0);
 
-    // Read initial handshake
     char buf[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
     if (n <= 0) {
@@ -187,31 +181,27 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
         return;
     }
 
-    if (buf[0] != 0x05) { // Not SOCKS5
-        log("❌ Protocolo nao suportado != SOCKS5", "WARNING");
+    if (buf[0] != 0x05) {
+        log("? Protocolo nao suportado != SOCKS5", "WARNING");
         close(client_fd);
         return;
     }
 
-    // Send no-auth method select
     char method_selection[2] = {0x05, 0x00};
     send(client_fd, method_selection, 2, 0);
 
-    // Read SOCKS5 request
     n = recv(client_fd, buf, sizeof(buf), 0);
     if (n <= 0) {
         close(client_fd);
         return;
     }
 
-    // Only support CONNECT command (0x01)
     if (buf[1] != 0x01) {
-        log("❌ SOCKS comando nao suportado.", "WARNING");
+        log("? SOCKS comando nao suportado.", "WARNING");
         close(client_fd);
         return;
     }
 
-    // Build SOCKS response success with bind address 0.0.0.0 port 22
     char resp[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 22};
     send(client_fd, resp, 10, 0);
 
@@ -222,13 +212,13 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     inet_pton(AF_INET, "127.0.0.1", &ssh_addr.sin_addr);
 
     if (connect(ssh_fd, (sockaddr*)&ssh_addr, sizeof(ssh_addr)) < 0) {
-        log("❌ Erro ao conectar ao OpenSSH.", "ERROR");
+        log("? Erro ao conectar ao OpenSSH.", "ERROR");
         close(client_fd);
         close(ssh_fd);
         return;
     }
 
-    log("🔗 SOCKS client conectado e redirecionado para OpenSSH.");
+    log("?? SOCKS client conectado e redirecionado para OpenSSH.");
 
     std::thread t1([client_fd, ssh_fd, client_ssl]() {
         proxy_data(client_fd, ssh_fd, client_ssl, nullptr);
@@ -251,7 +241,6 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
 
 // Handle a new client connection: detect if TLS, websocket or socks, dispatch accordingly
 void handle_connection(int client_fd) {
-    // Peek at initial bytes without removing from socket buffer
     char buf[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT); 
     if (n <= 0) {
@@ -266,13 +255,12 @@ void handle_connection(int client_fd) {
         ssl = SSL_new(ssl_ctx);
         SSL_set_fd(ssl, client_fd);
         if (SSL_accept(ssl) <= 0) {
-            log("❌ Erro na negociação SSL.", "ERROR");
+            log("? Erro na negociação SSL.", "ERROR");
             SSL_free(ssl);
             close(client_fd);
             return;
         }
 
-        // Now peek decrypted bytes from SSL
         char ssl_buf[BUFFER_SIZE];
         n = SSL_peek(ssl, ssl_buf, sizeof(ssl_buf));
         if (n <= 0) {
@@ -307,7 +295,7 @@ void handle_connection(int client_fd) {
             handle_socks(client_fd, nullptr);
             return;
         } else {
-            log("Protocolo desconhecido recebido, fechando conexao.");
+            log("Protocolo desconhecido recebido, fechando conexão.");
             close(client_fd);
             return;
         }
@@ -400,7 +388,7 @@ void run_proxy(int port) {
 
     int server_fd_local = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd_local < 0) {
-        log("❌ Erro ao criar socket do servidor.", "ERROR");
+        log("? Erro ao criar socket do servidor.", "ERROR");
         return;
     }
 
@@ -413,68 +401,49 @@ void run_proxy(int port) {
     server_addr.sin_port = htons(port);
 
     if (bind(server_fd_local, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        log("❌ Erro ao vincular porta.", "ERROR");
+        log("? Erro ao vincular porta.", "ERROR");
         close(server_fd_local);
         return;
     }
 
     if (listen(server_fd_local, SOMAXCONN) < 0) {
-        log("❌ Erro ao escutar conexões.", "ERROR");
+        log("? Erro ao escutar conexões.", "ERROR");
         close(server_fd_local);
         return;
     }
 
     set_non_blocking(server_fd_local);
 
-    log("🟢 Proxy iniciado na porta " + std::to_string(port));
+    log("?? Proxy iniciado na porta " + std::to_string(port));
 
-    int epoll_fd = epoll_create1(0);
-    if (epoll_fd == -1) {
-        log("❌ Falha ao criar epoll.", "ERROR");
-        close(server_fd_local);
-        return;
-    }
+    asio::io_context io_context;
 
-    epoll_event event{}, events[MAX_EVENTS];
-    event.events = EPOLLIN;
-    event.data.fd = server_fd_local;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd_local, &event);
+    // Create an acceptor to handle incoming connections
+    asio::ip::tcp::acceptor acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port));
 
     while (running.load()) {
-        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 1000);
-        if (nfds == -1) {
-            if (errno == EINTR) continue;
-            log("❌ epoll_wait falhou.", "ERROR");
-            break;
-        }
+        asio::ip::tcp::socket socket(io_context);
+        acceptor.accept(socket); // Accept a new connection
 
-        for (int i = 0; i < nfds; ++i) {
-            if(events[i].data.fd == server_fd_local) {
-                sockaddr_in client_addr;
-                socklen_t client_len = sizeof(client_addr);
-                int client_fd = accept(server_fd_local, (sockaddr*)&client_addr, &client_len);
-                if(client_fd >= 0) {
-                    set_non_blocking(client_fd);
-                    std::thread(handle_connection, client_fd).detach();
-                }
-            }
-        }
+        std::thread([socket = std::move(socket)]() mutable {
+            int client_fd = socket.native_handle();
+            handle_connection(client_fd);
+        }).detach();
     }
 
-    close(epoll_fd);
     close(server_fd_local);
 
     {
         std::lock_guard<std::mutex> lock(ports_mutex);
         open_ports.erase(port);
     }
-    log("🔴 Proxy encerrado na porta " + std::to_string(port));
+    log("?? Proxy encerrado na porta " + std::to_string(port));
 }
 
 void signal_handler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
         running = false;
-        log("🔴 Sinal recebido para encerrar proxy.");
+        log("?? Sinal recebido para encerrar proxy.");
     }
 }
 
@@ -537,4 +506,3 @@ int main() {
 
     return 0;
 }
-

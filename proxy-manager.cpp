@@ -67,7 +67,26 @@ void cleanup_ssl() {
 }
 
 // Initialize SSL context for TLS
+// Atualizar a função setup_ssl para lidar com erros de certificado
 void setup_ssl() {
+    // Verificar se os arquivos de certificado e chave existem
+    const std::string cert_path = "cert.pem";
+    const std::string key_path = "key.pem";
+
+    if (access(cert_path.c_str(), F_OK) == -1 || access(key_path.c_str(), F_OK) == -1) {
+        log("? Arquivos de certificado SSL não encontrados. Gerando certificados autoassinados...", "WARNING");
+
+        // Gerar certificados autoassinados
+        std::string command = "openssl req -x509 -newkey rsa:2048 -keyout " + key_path +
+                              " -out " + cert_path + " -days 365 -nodes -subj \"/CN=localhost\"";
+        if (system(command.c_str()) != 0) {
+            log("? Erro ao gerar certificados autoassinados.", "ERROR");
+            exit(1);
+        }
+        log("?? Certificados autoassinados gerados com sucesso.");
+    }
+
+    // Inicializar SSL
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
@@ -76,11 +95,18 @@ void setup_ssl() {
         log("? Erro ao configurar SSL.", "ERROR");
         exit(1);
     }
-    if (!SSL_CTX_use_certificate_file(ssl_ctx, "cert.pem", SSL_FILETYPE_PEM) ||
-        !SSL_CTX_use_PrivateKey_file(ssl_ctx, "key.pem", SSL_FILETYPE_PEM)) {
-        log("? Erro ao carregar certificado SSL.", "ERROR");
+
+    // Carregar os arquivos de certificado e chave
+    if (!SSL_CTX_use_certificate_file(ssl_ctx, cert_path.c_str(), SSL_FILETYPE_PEM)) {
+        log("? Erro ao carregar o arquivo de certificado: " + cert_path, "ERROR");
         exit(1);
     }
+    if (!SSL_CTX_use_PrivateKey_file(ssl_ctx, key_path.c_str(), SSL_FILETYPE_PEM)) {
+        log("? Erro ao carregar o arquivo de chave privada: " + key_path, "ERROR");
+        exit(1);
+    }
+
+    log("?? Certificados SSL carregados com sucesso.");
 }
 
 // Helper: check if connection data indicates TLS (WSS)

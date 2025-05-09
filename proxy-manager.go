@@ -334,7 +334,7 @@ func main() {
 	for {
 		clearScreen()
 		fmt.Println("============================")
-		fmt.Println("      Proxy Euro Verção 1.0")
+		fmt.Println("      Proxy Euro Verção 1.5")
 		fmt.Println("============================")
 		fmt.Println("== 1 - Abrir nova porta    ==")
 		fmt.Println("== 2 - Fechar porta        ==")

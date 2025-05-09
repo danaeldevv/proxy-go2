@@ -211,7 +211,9 @@ func runProxy(port int) {
 		log.Fatalf("Erro ao carregar cert TLS: %v", err)
 	}
 
-	ln, err := tls.Listen("tcp", fmt.Sprintf(":%d", port), tlsConfig)
+	// Listen explicitly on all interfaces IPv4 and IPv6
+	address := fmt.Sprintf("0.0.0.0:%d", port)
+	ln, err := tls.Listen("tcp", address, tlsConfig)
 	if err != nil {
 		log.Fatalf("Erro ao abrir listener TLS: %v", err)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"

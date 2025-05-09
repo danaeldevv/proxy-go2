@@ -2,111 +2,93 @@
 
 set -e
 
-# Função para tratamento de erros
-handle_error() {
-    echo "Erro durante a instalação. Verifique as mensagens acima."
-    exit 1
+PROXY_REPO_URL="https://github.com/usuario/proxy.git"   # <-- Substitua pelo URL correto do seu repositório
+PROXY_DIR="proxy-cpp"
+EXEC_NAME="proxy"
+
+echo "Iniciando instalação do Proxy C++..."
+
+# Função para limpar instalações anteriores
+clean_previous_install() {
+    echo "Removendo instalações anteriores..."
+    if command -v $EXEC_NAME &> /dev/null; then
+        sudo rm -f $(command -v $EXEC_NAME)
+        echo "Executável antigo removido."
+    fi
+    if [ -d "$PROXY_DIR" ]; then
+        rm -rf "$PROXY_DIR"
+        echo "Diretório antigo removido."
+    fi
 }
 
-trap handle_error ERR
+# Instalar dependências necessárias
+install_dependencies() {
+    echo "Instalando dependências..."
+    # Atualiza repositórios
+    sudo apt-get update -y
 
-# Verificar se é root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Execute o script como root!"
-    exit 1
-fi
+    # Instala build-essential, OpenSSL e libevent, git, pkg-config, make, cmake
+    sudo apt-get install -y build-essential libssl-dev libevent-dev git pkg-config cmake
 
-# Configurações
-REPO_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-manager.go"
-INSTALL_DIR="/usr/local/bin"
-CERT_DIR="/etc/multiprocy"
+    echo "Dependências instaladas."
+}
 
-# Limpar instalações anteriores
-echo "Limpando instalações anteriores..."
+# Clonar ou atualizar repositorio
+clone_repo() {
+    echo "Clonando repositório..."
+    git clone "$PROXY_REPO_URL" "$PROXY_DIR"
+}
 
-# Parar e remover serviços systemd
-for service in $(systemctl list-unit-files --no-legend | grep -o "^multiproxy-port-[0-9]\+.service"); do
-    echo "Removendo serviço $service"
-    systemctl stop "$service" 2>/dev/null || true
-    systemctl disable "$service" 2>/dev/null || true
-    rm -f "/etc/systemd/system/$service" || true
-done
+# Compilar proxy
+build_proxy() {
+    echo "Compilando proxy..."
+    cd "$PROXY_DIR"
+    # Assumindo projeto C++ simples sem cmake: compile proxy.cpp com flags libs SSL e event
+    g++ proxy.cpp -o $EXEC_NAME -lssl -lcrypto -levent -lpthread
 
-# Recarregar systemd
-systemctl daemon-reload 2>/dev/null || true
+    if [ ! -f "$EXEC_NAME" ]; then
+        echo "Erro: compilação falhou, executável não criado."
+        exit 1
+    fi
 
-# Remover binário antigo
-rm -f "$INSTALL_DIR/multiproxy"
+    echo "Compilação concluída."
+}
 
-# Instalar dependências
-echo "Instalando dependências..."
- apt-get update -y
-if ! command -v git >/dev/null; then
-    apt-get install -y git
-fi
+# Instalar executável no sistema
+install_proxy() {
+    echo "Instalando proxy no sistema..."
+    sudo cp "$EXEC_NAME" /usr/local/bin/
+    sudo chmod +x /usr/local/bin/$EXEC_NAME
+    echo "Proxy instalado em /usr/local/bin/$EXEC_NAME"
+}
 
-if ! command -v go >/dev/null; then
-    apt-get install -y golang
-fi
+# Limpar arquivos temporários/repositorio e cache DNS
+cleanup() {
+    echo "Limpando arquivos temporários..."
 
-if ! command -v openssl >/dev/null; then
-    apt-get install -y openssl
-fi
+    cd ..
+    rm -rf "$PROXY_DIR"
+    echo "Diretório temporário removido."
 
-# Criar diretório para certificados
-mkdir -p "$CERT_DIR"
+    echo "Limpando cache DNS..."
+    if systemctl is-active --quiet systemd-resolved; then
+        sudo systemctl restart systemd-resolved
+        echo "Cache DNS reiniciado via systemd-resolved."
+    else
+        # fallback para resolverd
+        sudo /etc/init.d/dns-clean restart || echo "Falha ao limpar cache DNS via dns-clean"
+    fi
+}
 
-# Gerar certificados SSL se não existirem
-if [ ! -f "$CERT_DIR/server.crt" ] || [ ! -f "$CERT_DIR/server.key" ]; then
-    echo "Gerando certificados TLS..."
-    openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
-        -keyout "$CERT_DIR/server.key" \
-        -out "$CERT_DIR/server.crt" \
-        -subj "/CN=localhost" 2>/dev/null
-fi
+# Fluxo completo
+clean_previous_install
+install_dependencies
+clone_repo
+build_proxy
+install_proxy
+cleanup
 
-# Baixar e compilar
-TMP_DIR=$(mktemp -d)
-echo "Baixando código do GitHub..."
-if ! curl -sSL -o "$TMP_DIR/proxy-manager.go" "$REPO_URL"; then
-    echo "Falha no download do código fonte!"
-    exit 1
-fi
+echo "Instalação concluída com sucesso!"
+echo "Use o comando '$EXEC_NAME' para rodar o proxy."
 
-# Validar arquivo baixado
-if [ ! -s "$TMP_DIR/proxy-manager.go" ] || ! grep -q '^package main' "$TMP_DIR/proxy-manager.go"; then
-    echo "Arquivo baixado inválido ou corrompido!"
-    exit 1
-fi
-
-# Ajustar caminho dos certificados no código
-echo "Ajustando configurações..."
-sed -i "s|certFile      = \"server.crt\"|certFile      = \"$CERT_DIR/server.crt\"|g" "$TMP_DIR/proxy-manager.go"
-sed -i "s|keyFile       = \"server.key\"|keyFile       = \"$CERT_DIR/server.key\"|g" "$TMP_DIR/proxy-manager.go"
-
-# Criar módulo Go temporário
-echo "Criando módulo Go..."
-(cd "$TMP_DIR" && \
-    go mod init proxy-manager && \
-    go get golang.org/x/net/websocket && \
-    go mod tidy)
-
-# Compilar
-echo "Compilando..."
-(cd "$TMP_DIR" && go build -o multiproxy .)
-
-# Instalar
-echo "Instalando binário em $INSTALL_DIR..."
-mv "$TMP_DIR/multiproxy" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/multiproxy"
-
-# Limpar
-rm -rf "$TMP_DIR"
-
-echo "
-Instalação concluída com sucesso!
-Comandos disponíveis:
-- Iniciar o proxy: multiproxy
-- Gerenciar portas: multiproxy (via menu interativo)
-- Certificados TLS em: $CERT_DIR
-"
+``` ⬤

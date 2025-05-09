@@ -14,6 +14,8 @@ TMP_DIR=$(mktemp -d)
 REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 GO_VERSION="1.20"  # Versão mínima do Go
 NGINX_CONF="/etc/nginx/sites-available/proxyeuro"
+NGINX_LINK="/etc/nginx/sites-enabled/proxyeuro"
+PROXY_PORT=1080  # Porta onde o proxy Go vai rodar, ajuste se necessário
 
 # Função para tratamento de erros
 handle_error() {
@@ -22,18 +24,16 @@ handle_error() {
     exit 1
 }
 
-# Barra de progresso simples
 progress_bar() {
     local duration=$1
     echo -n "["
-    for ((i=0; i<duration; i++)); do
+    for (( i=0; i<duration; i++ )); do
         echo -n "#"
-        sleep 0.2
+        sleep 0.15
     done
     echo "]"
 }
 
-# Execute um comando mostrando label e barra de progresso
 run_step() {
     local label="$1"
     local command="$2"
@@ -46,12 +46,10 @@ run_step() {
     echo " concluído."
 }
 
-# Limpar cache DNS
 clear_dns_cache() {
     systemd-resolve --flush-caches || echo "Falha ao limpar cache DNS."
 }
 
-# Remover instalação anterior
 cleanup() {
     if [ -f "$INSTALL_DIR/proxyeuro" ]; then
         systemctl stop proxyeuro@* 2>/dev/null
@@ -59,15 +57,21 @@ cleanup() {
         rm -f "$INSTALL_DIR/proxyeuro" "$SERVICE_DIR/proxyeuro@.service"
         systemctl daemon-reload
     fi
+
+    # Remove configuração antiga do nginx se existir
+    if [ -L "$NGINX_LINK" ]; then
+        rm -f "$NGINX_LINK"
+    fi
+    if [ -f "$NGINX_CONF" ]; then
+        rm -f "$NGINX_CONF"
+    fi
 }
 
-# Instalar dependências
 install_deps() {
     apt-get update -qq || handle_error "Atualizar pacotes falhou"
     apt-get install -y -qq git openssl wget tar nginx || handle_error "Instalar dependências falhou"
 }
 
-# Instalar Go
 install_go() {
     if ! command -v go &> /dev/null; then
         wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz -O /tmp/go.tar.gz || handle_error "Baixar Go falhou"
@@ -90,7 +94,6 @@ install_go() {
     fi
 }
 
-# Gerar certificados
 generate_certificates() {
     mkdir -p /etc/ssl/proxyeuro
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -99,19 +102,16 @@ generate_certificates() {
         -subj "/C=BR/ST=State/L=City/O=Organization/OU=Unit/CN=example.com" || handle_error "Gerar certificados falhou"
 }
 
-# Clonar repositório
 prepare_environment() {
     git clone -q "$REPO_URL" "$TMP_DIR" || handle_error "Clonar repositório falhou"
     cd "$TMP_DIR" || handle_error "Acessar diretório temporário falhou"
 }
 
-# Compilar proxy
 compile_proxy() {
     go mod init proxyeuro 2>/dev/null || true
     go build -o proxyeuro proxy-manager.go || handle_error "Compilar proxy falhou"
 }
 
-# Instalar proxy e configurar serviço
 install_proxy() {
     cp proxyeuro "$INSTALL_DIR/proxyeuro" || handle_error "Copiar binário falhou"
     chmod +x "$INSTALL_DIR/proxyeuro"
@@ -134,25 +134,33 @@ EOF
     systemctl daemon-reload
 }
 
-# Configurar Nginx
 configure_nginx() {
     cat > "$NGINX_CONF" <<EOF || handle_error "Criar configuração do Nginx falhou"
 server {
-    listen 80;
-    server_name example.com;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name _;
 
     location / {
-        proxy_pass http://localhost:8080;  # Altere a porta conforme necessário
+        proxy_pass http://127.0.0.1:$PROXY_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
     }
 }
 EOF
 
-    ln -s "$NGINX_CONF" /etc/nginx/sites-enabled/ || handle_error "Ativar configuração do Nginx falhou"
+    # Link da configuração
+    ln -sf "$NGINX_CONF" "$NGINX_LINK"
+
+    # Testa a configuração antes de recarregar
+    nginx -t || handle_error "Teste da configuração do Nginx falhou. Corrija o erro e tente novamente."
+
     systemctl restart nginx || handle_error "Reiniciar Nginx falhou"
+    systemctl enable nginx
 }
 
 main() {
@@ -167,8 +175,10 @@ main() {
     run_step "Configurando Nginx" "configure_nginx"
 
     echo -e "\n✅ Instalação concluída!"
-    echo "Use o comando para abrir o menu do proxy:"
-    echo -e "\e[32mproxyeuro\e[0m"
+    echo "Para iniciar o proxy na porta $PROXY_PORT utilize o comando:"
+    echo -e "\e[32msystemctl start proxyws@$PROXY_PORT\e[0m"
+    echo "Use o comando:"
+    echo -e "\e[32mproxyeuro\e[0m para abrir o menu."
 }
 
 main

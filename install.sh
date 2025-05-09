@@ -7,9 +7,8 @@ PROXY_REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 PROXY_DIR="proxy-go"
 EXEC_NAME="proxy-manager"
 
-echo "Iniciando instalação do Proxy C++..."
+echo "Iniciando instalação do Proxy C++ com Boost.Asio..."
 
-# Função para limpar instalações anteriores
 clean_previous_install() {
     echo "Removendo instalações anteriores..."
     if command -v $EXEC_NAME &> /dev/null; then
@@ -22,41 +21,38 @@ clean_previous_install() {
     fi
 }
 
-# Instalar dependências necessárias do sistema
 install_dependencies() {
-    echo "Atualizando repositórios..."
+    echo "Atualizando repositórios e instalando dependências..."
     sudo apt-get update -y
-
-    echo "Instalando dependências de build, OpenSSL e Boost..."
     sudo apt-get install -y build-essential libssl-dev libboost-system-dev libboost-thread-dev git pkg-config cmake curl
-
     echo "Dependências instaladas."
 }
 
-# Clonar repositório do proxy C++
 clone_repo() {
     echo "Clonando repositório do proxy..."
     git clone "$PROXY_REPO_URL" "$PROXY_DIR"
 }
 
-# Compilar proxy
+patch_code_for_boost_asio() {
+    echo "Ajustando includes para Boost.Asio..."
+    # Substitui #include <asio.hpp> por #include <boost/asio.hpp> e #include <boost/asio/ssl.hpp>
+    sed -i 's/#include <asio.hpp>/#include <boost\/asio.hpp>/' "$PROXY_DIR/proxy-manager.cpp"
+    sed -i 's/#include <asio\/ssl.hpp>/#include <boost\/asio\/ssl.hpp>/' "$PROXY_DIR/proxy-manager.cpp"
+    echo "Includes ajustados."
+}
+
 build_proxy() {
     echo "Compilando proxy..."
     cd "$PROXY_DIR"
-
-    # Compilação do proxy com Boost.Asio
     g++ proxy-manager.cpp -o $EXEC_NAME -lboost_system -lboost_thread -lpthread -lssl -lcrypto
-
     if [ ! -f "$EXEC_NAME" ]; then
         echo "Erro: compilação falhou, executável não criado."
         exit 1
     fi
-
     cd ..
     echo "Compilação concluída."
 }
 
-# Instalar executável no sistema
 install_proxy() {
     echo "Instalando proxy no sistema..."
     sudo cp "$PROXY_DIR/$EXEC_NAME" /usr/local/bin/
@@ -64,12 +60,10 @@ install_proxy() {
     echo "Proxy instalado em /usr/local/bin/$EXEC_NAME"
 }
 
-# Limpar arquivos temporários/repositorio e cache DNS
 cleanup() {
     echo "Limpando arquivos temporários..."
     rm -rf "$PROXY_DIR"
     echo "Diretórios temporários removidos."
-
     echo "Limpando cache DNS..."
     if systemctl is-active --quiet systemd-resolved; then
         sudo systemctl restart systemd-resolved
@@ -79,13 +73,14 @@ cleanup() {
     fi
 }
 
-# Fluxo completo da instalação
 clean_previous_install
 install_dependencies
 clone_repo
+patch_code_for_boost_asio
 build_proxy
 install_proxy
 cleanup
 
 echo "Instalação concluída com sucesso!"
 echo "Use o comando '$EXEC_NAME' para rodar o proxy."
+``` ⬤

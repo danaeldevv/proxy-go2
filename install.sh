@@ -20,10 +20,6 @@ clean_previous_install() {
         rm -rf "$PROXY_DIR"
         echo "Diretório antigo removido."
     fi
-    if [ -d "libevent-2.1.12-stable" ]; then
-        rm -rf libevent-2.1.12-stable
-        echo "Pasta libevent removida."
-    fi
 }
 
 # Instalar dependências necessárias do sistema
@@ -31,30 +27,10 @@ install_dependencies() {
     echo "Atualizando repositórios..."
     sudo apt-get update -y
 
-    echo "Instalando dependências de build e OpenSSL..."
-    sudo apt-get install -y build-essential libssl-dev git pkg-config cmake curl
+    echo "Instalando dependências de build, OpenSSL e Boost..."
+    sudo apt-get install -y build-essential libssl-dev libboost-system-dev libboost-thread-dev git pkg-config cmake curl
 
-    # Tenta instalar libevent-dev via gerenciador de pacotes
-    if ! dpkg -s libevent-dev >/dev/null 2>&1; then
-        echo "libevent-dev não encontrado, será instalado manualmente."
-        install_libevent_manual
-    else
-        echo "libevent-dev instalado via apt."
-    fi
-}
-
-# Instalação manual do libevent se não estiver disponível
-install_libevent_manual() {
-    echo "Instalando libevent manualmente..."
-    wget -c https://libevent.org/downloads/libevent-2.1.12-stable.tar.gz
-    tar -xzf libevent-2.1.12-stable.tar.gz
-    cd libevent-2.1.12-stable
-    ./configure
-    make
-    sudo make install
-    cd ..
-    rm libevent-2.1.12-stable.tar.gz
-    echo "libevent instalado manualmente."
+    echo "Dependências instaladas."
 }
 
 # Clonar repositório do proxy C++
@@ -68,8 +44,8 @@ build_proxy() {
     echo "Compilando proxy..."
     cd "$PROXY_DIR"
 
-    # Ajuste o include para usar o caminho correto do libevent instalado manualmente (/usr/local/include/event2)
-    g++ proxy-manager.cpp -o $EXEC_NAME -I/usr/local/include/event2 -lssl -lcrypto -levent -lpthread
+    # Compilação do proxy com Boost.Asio
+    g++ proxy-manager.cpp -o $EXEC_NAME -lboost_system -lboost_thread -lpthread -lssl -lcrypto
 
     if [ ! -f "$EXEC_NAME" ]; then
         echo "Erro: compilação falhou, executável não criado."
@@ -92,7 +68,6 @@ install_proxy() {
 cleanup() {
     echo "Limpando arquivos temporários..."
     rm -rf "$PROXY_DIR"
-    rm -rf libevent-2.1.12-stable
     echo "Diretórios temporários removidos."
 
     echo "Limpando cache DNS..."

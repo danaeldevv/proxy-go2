@@ -40,6 +40,7 @@ rm -f "$INSTALL_DIR/multiproxy"
 
 # Instalar dependências
 echo "Instalando dependências..."
+apt-get update -y
 if ! command -v git >/dev/null; then
     apt-get install -y git
 fi
@@ -73,6 +74,13 @@ curl -sSL -o "$TMP_DIR/proxy-manager.go" "$REPO_URL"
 echo "Ajustando configurações..."
 sed -i "s|certFile      = \"server.crt\"|certFile      = \"$CERT_DIR/server.crt\"|g" "$TMP_DIR/proxy-manager.go"
 sed -i "s|keyFile       = \"server.key\"|keyFile       = \"$CERT_DIR/server.key\"|g" "$TMP_DIR/proxy-manager.go"
+
+# Criar módulo Go temporário
+echo "Criando módulo Go..."
+(cd "$TMP_DIR" && \
+    go mod init proxy-manager && \
+    go get golang.org/x/net/websocket && \
+    go mod tidy)
 
 # Compilar
 echo "Compilando..."

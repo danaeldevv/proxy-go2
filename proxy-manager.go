@@ -19,19 +19,16 @@ import (
 )
 
 const (
-	logFilePath  = "/var/log/proxyws.log"
-	pidFileDir   = "/var/run"
-	serviceDir   = "/etc/systemd/system"
-	readTimeout  = 5 * time.Second
-	nginxConfDir = "/etc/nginx/sites-available"
-	nginxLinkDir = "/etc/nginx/sites-enabled"
+	logFilePath = "/var/log/proxyws.log"
+	pidFileDir  = "/var/run"
+	serviceDir  = "/etc/systemd/system"
+	readTimeout = 5 * time.Second
 )
 
 var (
 	logMutex  sync.Mutex
 	sslConfig *tls.Config
 	stopChan  chan struct{}
-	proxyPort int
 )
 
 func logMessage(msg string) {
@@ -47,91 +44,14 @@ func logMessage(msg string) {
 	fmt.Fprintf(f, "[%s] %s\n", timestamp, msg)
 }
 
-// Abre porta no firewall usando iptables, se já não estiver aberta
-func ensurePortOpen(port int) error {
-	check := exec.Command("iptables", "-C", "INPUT", "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
-	err := check.Run()
-	if err == nil {
-		// Regra já existe
-		logMessage(fmt.Sprintf("Porta %d já liberada no firewall.", port))
-		return nil
-	}
-	// Insere a regra para abrir porta
-	insert := exec.Command("iptables", "-I", "INPUT", "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
-	if err := insert.Run(); err != nil {
-		return fmt.Errorf("falha ao inserir regra iptables para porta %d: %v", port, err)
-	}
-	logMessage(fmt.Sprintf("Porta %d liberada no firewall.", port))
-	return nil
-}
-
-// Gera a configuração Nginx para encaminhar da porta 80 para a porta do proxy
-func configureNginx(port int) error {
-	confPath := fmt.Sprintf("%s/proxyeuro", nginxConfDir)
-	linkPath := fmt.Sprintf("%s/proxyeuro", nginxLinkDir)
-
-	// Conteúdo da configuração básica do Nginx
-	nginxConf := fmt.Sprintf(`
-server {
-	listen 80;
-	listen [::]:80;
-
-	server_name _;
-
-	location / {
-		proxy_pass http://127.0.0.1:%d;
-		proxy_http_version 1.1;
-		proxy_set_header Upgrade $http_upgrade;
-		proxy_set_header Connection "upgrade";
-		proxy_set_header Host $host;
-		proxy_cache_bypass $http_upgrade;
-	}
-}
-`, port)
-
-	// Escreve o arquivo de configuração
-	if err := os.WriteFile(confPath, []byte(nginxConf), 0644); err != nil {
-		return fmt.Errorf("falha ao gravar arquivo de configuração do Nginx: %v", err)
-	}
-
-	// Remove link antigo se existir
-	if _, err := os.Lstat(linkPath); err == nil {
-		if err := os.Remove(linkPath); err != nil {
-			return fmt.Errorf("falha ao remover link simbólico antigo do Nginx: %v", err)
-		}
-	}
-
-	// Cria link simbólico para habilitar o site
-	if err := os.Symlink(confPath, linkPath); err != nil {
-		return fmt.Errorf("falha ao criar link simbólico do Nginx: %v", err)
-	}
-
-	// Testa configuração Nginx
-	testCmd := exec.Command("nginx", "-t")
-	var stderr bytes.Buffer
-	testCmd.Stderr = &stderr
-	if err := testCmd.Run(); err != nil {
-		return fmt.Errorf("teste configuração Nginx falhou: %v\n%s", err, stderr.String())
-	}
-
-	// Reinicia o Nginx para aplicar alterações
-	reviveCmd := exec.Command("systemctl", "restart", "nginx")
-	if err := reviveCmd.Run(); err != nil {
-		return fmt.Errorf("falha ao reiniciar Nginx: %v", err)
-	}
-
-	logMessage("Configuração do Nginx aplicada e serviço reiniciado com sucesso.")
-	return nil
-}
-
 func readInitialData(conn net.Conn) (string, error) {
 	buf := make([]byte, 8192)
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	n, err := conn.Read(buf)
+	conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return "", err
 	}
-	conn.SetReadDeadline(time.Time{}) // limpa deadline
 	return string(buf[:n]), nil
 }
 
@@ -152,15 +72,12 @@ func tryProtocols(conn net.Conn) {
 	if tryWebSocket(conn, true) {
 		return
 	}
-
 	if trySocks(conn, true) {
 		return
 	}
-
 	if trySocks(conn, false) {
 		return
 	}
-
 	if tryHTTP(conn) {
 		return
 	}
@@ -208,13 +125,12 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		sshRedirect(conn)
 		return true
 	}
-
 	return false
 }
 
 func trySocks(conn net.Conn, useTLS bool) bool {
-	var err error
 	var initialData string
+	var err error
 
 	if useTLS {
 		tlsConn, err := tryTLSHandshake(conn)
@@ -269,7 +185,7 @@ func tryHTTP(conn net.Conn) bool {
 		return false
 	}
 
-	resp := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nProxy is working!"
+	resp := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nProxy está funcionando!"
 	_, err = conn.Write([]byte(resp))
 	if err != nil {
 		logMessage("Erro enviando resposta HTTP: " + err.Error())
@@ -284,6 +200,7 @@ func tryTCP(conn net.Conn) {
 	sshRedirect(conn)
 }
 
+// sshRedirect redireciona toda comunicação para ssh porta 22 localhost
 func sshRedirect(conn net.Conn) {
 	serverConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
@@ -309,6 +226,7 @@ func sshRedirect(conn net.Conn) {
 	logMessage("Conexão redirecionada para o servidor SSH finalizada")
 }
 
+// parseHeaders analisa os headers HTTP recebidos
 func parseHeaders(data string) map[string]string {
 	headers := make(map[string]string)
 	scanner := bufio.NewScanner(strings.NewReader(data))
@@ -376,75 +294,44 @@ func clearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
 
-// startProxy inicia proxy e configura firewall + nginx automaticamente
-func startProxy(port int) {
-	proxyPort = port
-
-	err := ensurePortOpen(port)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro ao abrir porta no firewall: %v", err))
-		fmt.Printf("Erro ao abrir porta no firewall: %v\n", err)
-		return
+func ensurePortOpen(port int) error {
+	// Tenta abrir a porta no firewall via iptables
+	check := exec.Command("iptables", "-C", "INPUT", "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT")
+	err := check.Run()
+	if err == nil {
+		return nil // regra já existe
 	}
 
-	err = configureNginx(port)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro na configuração do Nginx: %v", err))
-		fmt.Printf("Erro na configuração do Nginx: %v\n", err)
-		return
+	insert := exec.Command("iptables", "-I", "INPUT", "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT")
+	if err := insert.Run(); err != nil {
+		return fmt.Errorf("falha ao inserir regra iptables na porta %d: %v", port, err)
 	}
-
-	addr := fmt.Sprintf(":%d", port)
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		logMessage(fmt.Sprintf("Erro iniciando listener na porta %d: %v", port, err))
-		fmt.Printf("Erro iniciando listener na porta %d: %v\n", port, err)
-		return
-	}
-	defer listener.Close()
-
-	pidFile := fmt.Sprintf("%s/proxyws_%d.pid", pidFileDir, port)
-	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
-		logMessage(fmt.Sprintf("Falha ao gravar PID file: %v", err))
-	}
-
-	logMessage(fmt.Sprintf("Proxy iniciado na porta %d (WebSocket Security + SOCKS5 Secure)", port))
-	fmt.Printf("Proxy iniciado na porta %d\n", port)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		for {
-			sig := <-sigCh
-			logMessage(fmt.Sprintf("Sinal %v recebido, ignorando para manter proxy ativo", sig))
-		}
-	}()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				logMessage(fmt.Sprintf("Erro temporário aceitando conexão na porta %d: %v", port, err))
-				time.Sleep(50 * time.Millisecond)
-				continue
-			}
-			logMessage(fmt.Sprintf("Erro fatal aceitando conexão na porta %d: %v", port, err))
-			break
-		}
-		go tryProtocols(conn)
-	}
-	logMessage(fmt.Sprintf("Proxy encerrado na porta %d", port))
-	os.Remove(pidFile)
+	logMessage(fmt.Sprintf("Porta %d liberada no firewall", port))
+	return nil
 }
 
 func main() {
 	if len(os.Args) > 1 {
 		port, err := strconv.Atoi(os.Args[1])
-		if err != nil {
-			fmt.Printf("Parâmetro inválido: %s\n", os.Args[1])
+		if err != nil || port < 1 || port > 65535 {
+			fmt.Printf("Parâmetro de porta inválido: %s\n", os.Args[1])
 			return
 		}
+
+		err = ensurePortOpen(port)
+		if err != nil {
+			fmt.Printf("Erro ao liberar porta no firewall: %v\n", err)
+			return
+		}
+
+		execPath, err := os.Executable()
+		if err == nil {
+			err = createSystemdService(port, execPath)
+			if err != nil {
+				fmt.Printf("Erro criando systemd service: %v\n", err)
+			}
+		}
+
 		cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
 		if err == nil {
 			sslConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
@@ -501,9 +388,10 @@ func main() {
 				scanner.Scan()
 				continue
 			}
-			fmt.Printf("✅ Proxy iniciado na porta %d (WebSocket Security + SOCKS5 Secure)\n", port)
+			fmt.Printf("✅ Proxy iniciado na porta %d\n", port)
 			fmt.Println("Executando em background via systemd. Pressione Enter...")
 			scanner.Scan()
+
 		case "2":
 			clearScreen()
 			fmt.Print("Digite a porta a ser fechada: ")
@@ -533,13 +421,59 @@ func main() {
 			}
 			fmt.Print("Pressione Enter...")
 			scanner.Scan()
+
 		case "3":
 			clearScreen()
 			fmt.Println("👋 Saindo do menu. Os proxies ativos continuam em execução.")
 			return
+
 		default:
 			fmt.Println("❌ Opção inválida! Pressione Enter...")
 			scanner.Scan()
 		}
 	}
+}
+
+func startProxy(port int) {
+	addr := fmt.Sprintf(":%d", port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		logMessage(fmt.Sprintf("Erro ao iniciar listener na porta %d: %v", port, err))
+		return
+	}
+	defer listener.Close()
+
+	pidFile := fmt.Sprintf("%s/proxyws_%d.pid", pidFileDir, port)
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+		logMessage(fmt.Sprintf("Falha ao gravar PID file: %v", err))
+	}
+
+	logMessage(fmt.Sprintf("Proxy iniciado na porta %d", port))
+	fmt.Printf("Proxy iniciado na porta %d\n", port)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		for {
+			sig := <-sigCh
+			logMessage(fmt.Sprintf("Sinal %v recebido, ignorando para manter proxy ativo", sig))
+		}
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				logMessage(fmt.Sprintf("Erro temporário aceitando conexão na porta %d: %v", port, err))
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			logMessage(fmt.Sprintf("Erro fatal aceitando conexão na porta %d: %v", port, err))
+			break
+		}
+		go tryProtocols(conn)
+	}
+	logMessage(fmt.Sprintf("Proxy encerrado na porta %d", port))
+	os.Remove(pidFile)
 }

@@ -1,3 +1,5 @@
+#include <boost/asio.hpp> // Inclua o Boost.Asio
+#include <boost/asio/ssl.hpp> 
 #include <iostream>
 #include <fstream>
 #include <thread>
@@ -22,6 +24,8 @@
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
+
+namespace asio = boost::asio;
 
 // Constants
 #define BUFFER_SIZE 8192

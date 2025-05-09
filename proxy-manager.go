@@ -21,7 +21,7 @@ const (
 	logFilePath = "/var/log/proxyws.log"
 	pidFileDir  = "/var/run"
 	serviceDir  = "/etc/systemd/system"
-	readTimeout = 5 * time.Second // Aumentei o timeout para dar tempo de ler dados
+	readTimeout = 5 * time.Second
 )
 
 var (
@@ -57,7 +57,6 @@ func (p *peekConn) Read(b []byte) (int, error) {
 	return p.Conn.Read(b)
 }
 
-// leitura inicial com timeout e captura dos dados para análise
 func readInitialData(conn net.Conn) (string, error) {
 	buf := make([]byte, 8192)
 	conn.SetReadDeadline(time.Now().Add(readTimeout))
@@ -95,6 +94,10 @@ func tryProtocols(conn net.Conn) {
 		return
 	}
 
+	if tryHTTP(conn) {
+		return
+	}
+
 	tryTCP(conn)
 }
 
@@ -108,7 +111,6 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 			logMessage(fmt.Sprintf("Erro handshake TLS WebSocket: %v", err))
 			return false
 		}
-
 		initialData, err = readInitialData(tlsConn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial WebSocket pós-handshake TLS: %v", err))
@@ -123,33 +125,19 @@ func tryWebSocket(conn net.Conn, useTLS bool) bool {
 		}
 	}
 
-	// Detecta headers
-	scanner := bufio.NewScanner(strings.NewReader(initialData))
-	headers := map[string]string{}
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			break
-		}
-		colon := strings.Index(line, ":")
-		if colon > 0 {
-			key := strings.ToLower(strings.TrimSpace(line[:colon]))
-			value := strings.ToLower(strings.TrimSpace(line[colon+1:]))
-			headers[key] = value
-		}
-	}
+	headers := parseHeaders(initialData)
 
 	upg, upgOk := headers["upgrade"]
 	connHdr, connOk := headers["connection"]
 
 	if upgOk && upg == "websocket" && connOk && strings.Contains(connHdr, "upgrade") {
-		resp := "HTTP/1.1 101 ProxyEuro\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+		resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 		_, err = conn.Write([]byte(resp))
 		if err != nil {
-			logMessage("Erro enviando resposta 101 ProxyEuro WebSocket: " + err.Error())
+			logMessage("Erro enviando resposta 101 Switching Protocols: " + err.Error())
 			return false
 		}
-		logMessage("Conexão WSS (WebSocket Secure) estabelecida com resposta HTTP/1.1 101 ProxyEuro")
+		logMessage("Conexão WebSocket estabelecida com resposta HTTP/1.1 101 Switching Protocols")
 		sshRedirect(conn)
 		return true
 	}
@@ -167,7 +155,6 @@ func trySocks(conn net.Conn, useTLS bool) bool {
 			logMessage(fmt.Sprintf("Erro handshake TLS SOCKS5: %v", err))
 			return false
 		}
-
 		initialData, err = readInitialData(tlsConn)
 		if err != nil {
 			logMessage(fmt.Sprintf("Erro leitura inicial SOCKS5 pós-handshake TLS: %v", err))
@@ -182,19 +169,48 @@ func trySocks(conn net.Conn, useTLS bool) bool {
 		}
 	}
 
-	dataBytes := []byte(initialData)
-	if len(dataBytes) > 0 && dataBytes[0] == 0x05 {
-		resp := "HTTP/1.1 200 ProxyEuro\r\n\r\n"
+	if len(initialData) > 0 && initialData[0] == 0x05 {
+		resp := "HTTP/1.1 200 Connection Established\r\n\r\n"
 		_, err = conn.Write([]byte(resp))
 		if err != nil {
-			logMessage("Erro enviando resposta 200 ProxyEuro SOCKS5: " + err.Error())
+			logMessage("Erro enviando resposta 200 Connection Established: " + err.Error())
 			return false
 		}
-		logMessage(fmt.Sprintf("Conexão SOCKS5 estabelecida (TLS=%v) com resposta HTTP/1.1 200 ProxyEuro", useTLS))
+		logMessage(fmt.Sprintf("Conexão SOCKS5 estabelecida (TLS=%v)", useTLS))
 		sshRedirect(conn)
 		return true
 	}
 	return false
+}
+
+func tryHTTP(conn net.Conn) bool {
+	initialData, err := readInitialData(conn)
+	if err != nil {
+		logMessage(fmt.Sprintf("Erro leitura inicial HTTP: %v", err))
+		return false
+	}
+
+	// Verifica se inicia com métodos HTTP comuns
+	methods := []string{"GET ", "POST ", "HEAD ", "OPTIONS ", "PUT ", "DELETE ", "CONNECT "}
+	validHTTP := false
+	for _, m := range methods {
+		if strings.HasPrefix(strings.ToUpper(initialData), m) {
+			validHTTP = true
+			break
+		}
+	}
+	if !validHTTP {
+		return false
+	}
+
+	resp := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nProxy is working!"
+	_, err = conn.Write([]byte(resp))
+	if err != nil {
+		logMessage("Erro enviando resposta HTTP: " + err.Error())
+		return false
+	}
+	logMessage("Conexão HTTP estabelecida com resposta 200 OK")
+	return true
 }
 
 func tryTCP(conn net.Conn) {
@@ -225,6 +241,24 @@ func sshRedirect(conn net.Conn) {
 
 	wg.Wait()
 	logMessage("Conexão redirecionada para o servidor SSH finalizada")
+}
+
+func parseHeaders(data string) map[string]string {
+	headers := make(map[string]string)
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			break
+		}
+		colon := strings.Index(line, ":")
+		if colon > 0 {
+			key := strings.ToLower(strings.TrimSpace(line[:colon]))
+			value := strings.ToLower(strings.TrimSpace(line[colon+1:]))
+			headers[key] = value
+		}
+	}
+	return headers
 }
 
 func systemdServicePath(port int) string {
@@ -424,3 +458,4 @@ func startProxy(port int) {
 	logMessage(fmt.Sprintf("Proxy encerrado na porta %d", port))
 	os.Remove(pidFile)
 }
+

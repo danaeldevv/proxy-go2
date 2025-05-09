@@ -68,7 +68,6 @@ cleanup() {
 }
 
 install_deps() {
-    apt-get update -qq || handle_error "Atualizar pacotes falhou"
     apt-get install -y -qq git openssl wget tar nginx || handle_error "Instalar dependências falhou"
 }
 

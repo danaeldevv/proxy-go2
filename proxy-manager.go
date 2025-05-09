@@ -199,7 +199,6 @@ func tryTCP(conn net.Conn) {
 	sshRedirect(conn)
 }
 
-// sshRedirect redireciona toda comunicação para ssh porta 22 localhost
 func sshRedirect(conn net.Conn) {
 	serverConn, err := net.Dial("tcp", "127.0.0.1:22")
 	if err != nil {
@@ -225,7 +224,6 @@ func sshRedirect(conn net.Conn) {
 	logMessage("Conexão redirecionada para o servidor SSH finalizada")
 }
 
-// parseHeaders analisa os headers HTTP recebidos
 func parseHeaders(data string) map[string]string {
 	headers := make(map[string]string)
 	scanner := bufio.NewScanner(strings.NewReader(data))
@@ -293,44 +291,13 @@ func clearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
 
-func ensurePortOpen(port int) error {
-	// Tenta abrir a porta no firewall via iptables
-	check := exec.Command("iptables", "-C", "INPUT", "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT")
-	err := check.Run()
-	if err == nil {
-		return nil // regra já existe
-	}
-
-	insert := exec.Command("iptables", "-I", "INPUT", "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT")
-	if err := insert.Run(); err != nil {
-		return fmt.Errorf("falha ao inserir regra iptables na porta %d: %v", port, err)
-	}
-	logMessage(fmt.Sprintf("Porta %d liberada no firewall", port))
-	return nil
-}
-
 func main() {
 	if len(os.Args) > 1 {
 		port, err := strconv.Atoi(os.Args[1])
 		if err != nil || port < 1 || port > 65535 {
-			fmt.Printf("Parâmetro de porta inválido: %s\n", os.Args[1])
+			fmt.Printf("Parâmetro inválido: %s\n", os.Args[1])
 			return
 		}
-
-		err = ensurePortOpen(port)
-		if err != nil {
-			fmt.Printf("Erro ao liberar porta no firewall: %v\n", err)
-			return
-		}
-
-		execPath, err := os.Executable()
-		if err == nil {
-			err = createSystemdService(port, execPath)
-			if err != nil {
-				fmt.Printf("Erro criando systemd service: %v\n", err)
-			}
-		}
-
 		cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
 		if err == nil {
 			sslConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
@@ -390,7 +357,6 @@ func main() {
 			fmt.Printf("✅ Proxy iniciado na porta %d\n", port)
 			fmt.Println("Executando em background via systemd. Pressione Enter...")
 			scanner.Scan()
-
 		case "2":
 			clearScreen()
 			fmt.Print("Digite a porta a ser fechada: ")
@@ -420,12 +386,10 @@ func main() {
 			}
 			fmt.Print("Pressione Enter...")
 			scanner.Scan()
-
 		case "3":
 			clearScreen()
 			fmt.Println("👋 Saindo do menu. Os proxies ativos continuam em execução.")
 			return
-
 		default:
 			fmt.Println("❌ Opção inválida! Pressione Enter...")
 			scanner.Scan()

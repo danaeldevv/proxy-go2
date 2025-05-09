@@ -537,3 +537,8 @@ func proxyPair(a, b net.Conn) {
 	<-ch
 }
 
+// copyData copies data from src to dst until EOF or error
+func copyData(dst io.Writer, src io.Reader) {
+	io.Copy(dst, src)
+}
+

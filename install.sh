@@ -19,7 +19,7 @@ fi
 # Configurações
 REPO_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-manager.go"
 INSTALL_DIR="/usr/local/bin"
-CERT_DIR="/etc/multiproxy"
+CERT_DIR="/etc/multiprocy"
 
 # Limpar instalações anteriores
 echo "Limpando instalações anteriores..."
@@ -68,7 +68,16 @@ fi
 # Baixar e compilar
 TMP_DIR=$(mktemp -d)
 echo "Baixando código do GitHub..."
-curl -sSL -o "$TMP_DIR/proxy-manager.go" "$REPO_URL"
+if ! curl -sSL -o "$TMP_DIR/proxy-manager.go" "$REPO_URL"; then
+    echo "Falha no download do código fonte!"
+    exit 1
+fi
+
+# Validar arquivo baixado
+if [ ! -s "$TMP_DIR/proxy-manager.go" ] || ! grep -q '^package main' "$TMP_DIR/proxy-manager.go"; then
+    echo "Arquivo baixado inválido ou corrompido!"
+    exit 1
+fi
 
 # Ajustar caminho dos certificados no código
 echo "Ajustando configurações..."

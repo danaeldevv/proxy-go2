@@ -1,54 +1,95 @@
 #!/bin/bash
 
-# Script de instalação do Proxy Euro com dependências e limpeza de instalação anterior
-
 set -e
 
-# Verifica se executado como root
-if [ "$(id -u)" -ne 0 ]; then
-  echo "Por favor, execute este script como root: sudo $0"
-  exit 1
-fi
-
-INSTALL_DIR="/usr/local/bin"
-BIN_NAME="proxyeuro"  # ajuste conforme binário gerado
-TMP_DIR=$(mktemp -d)
-REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
-GO_VERSION="1.20"
-
+# Função para tratamento de erros
 handle_error() {
-  echo -e "\n\e[31m❌ Erro crítico: $1\e[0m"
-  rm -rf "$TMP_DIR"
-  exit 1
+    echo "Erro durante a instalação. Verifique as mensagens acima."
+    exit 1
 }
 
-echo "Removendo instalação anterior se existir..."
-if [ -f "$INSTALL_DIR/$BIN_NAME" ]; then
-  rm -f "$INSTALL_DIR/$BIN_NAME"
-  echo "Binário antigo removido."
+trap handle_error ERR
+
+# Verificar se é root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Execute o script como root!"
+    exit 1
 fi
 
-echo "Instalando dependências essenciais..."
-apt-get install -y -qq git openssl wget tar golang nginx iptables || handle_error "Falha ao instalar dependências"
+# Configurações
+REPO_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/main/proxy-manager.go"
+INSTALL_DIR="/usr/local/bin"
+CERT_DIR="/etc/multiproxy"
 
-echo "Clonando repositório..."
-git clone -q "$REPO_URL" "$TMP_DIR"
+# Limpar instalações anteriores
+echo "Limpando instalações anteriores..."
 
-cd "$TMP_DIR"
+# Parar e remover serviços systemd
+for service in $(systemctl list-unit-files --no-legend | grep -o "^multiproxy-port-[0-9]\+.service"); do
+    echo "Removendo serviço $service"
+    systemctl stop "$service" 2>/dev/null || true
+    systemctl disable "$service" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$service" || true
+done
 
-echo "Compilando o proxy..."
-go mod init proxyeuro 2>/dev/null || true
-go build -o "$BIN_NAME" proxy-manager.go || handle_error "Falha ao compilar o proxy"
+# Recarregar systemd
+systemctl daemon-reload 2>/dev/null || true
 
-echo "Copiando o binário para $INSTALL_DIR..."
-cp "$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-chmod +x "$INSTALL_DIR/$BIN_NAME"
+# Remover binário antigo
+rm -f "$INSTALL_DIR/multiproxy"
 
-echo "Limpando arquivos temporários..."
-cd /
+# Instalar dependências
+echo "Instalando dependências..."
+if ! command -v git >/dev/null; then
+    apt-get install -y git
+fi
+
+if ! command -v go >/dev/null; then
+    apt-get install -y golang
+fi
+
+if ! command -v openssl >/dev/null; then
+    apt-get install -y openssl
+fi
+
+# Criar diretório para certificados
+mkdir -p "$CERT_DIR"
+
+# Gerar certificados SSL se não existirem
+if [ ! -f "$CERT_DIR/server.crt" ] || [ ! -f "$CERT_DIR/server.key" ]; then
+    echo "Gerando certificados TLS..."
+    openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
+        -keyout "$CERT_DIR/server.key" \
+        -out "$CERT_DIR/server.crt" \
+        -subj "/CN=localhost" 2>/dev/null
+fi
+
+# Baixar e compilar
+TMP_DIR=$(mktemp -d)
+echo "Baixando código do GitHub..."
+curl -sSL -o "$TMP_DIR/proxy-manager.go" "$REPO_URL"
+
+# Ajustar caminho dos certificados no código
+echo "Ajustando configurações..."
+sed -i "s|certFile      = \"server.crt\"|certFile      = \"$CERT_DIR/server.crt\"|g" "$TMP_DIR/proxy-manager.go"
+sed -i "s|keyFile       = \"server.key\"|keyFile       = \"$CERT_DIR/server.key\"|g" "$TMP_DIR/proxy-manager.go"
+
+# Compilar
+echo "Compilando..."
+(cd "$TMP_DIR" && go build -o multiproxy .)
+
+# Instalar
+echo "Instalando binário em $INSTALL_DIR..."
+mv "$TMP_DIR/multiproxy" "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/multiproxy"
+
+# Limpar
 rm -rf "$TMP_DIR"
 
-echo -e "\n✅ Proxy Euro instalado com sucesso!"
-echo "Para iniciar o proxy, execute o comando (substitua <porta> pela porta desejada):"
-echo -e "  sudo $INSTALL_DIR/$BIN_NAME <porta>"
-echo "O proxy abrirá automaticamente a porta no firewall e configurará o Nginx."
+echo "
+Instalação concluída com sucesso!
+Comandos disponíveis:
+- Iniciar o proxy: multiproxy
+- Gerenciar portas: multiproxy (via menu interativo)
+- Certificados TLS em: $CERT_DIR
+"

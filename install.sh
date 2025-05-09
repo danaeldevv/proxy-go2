@@ -24,8 +24,10 @@ clean_previous_install() {
 
 # Instalar dependências necessárias
 install_dependencies() {
-    echo "Instalando dependências..."
+    echo "Atualizando repositórios..."
     sudo apt-get update -y
+
+    echo "Instalando dependências necessárias: build-essential, libssl-dev, libevent-dev, git, pkg-config, cmake..."
     sudo apt-get install -y build-essential libssl-dev libevent-dev git pkg-config cmake
 
     echo "Dependências instaladas."
@@ -77,7 +79,7 @@ cleanup() {
     fi
 }
 
-# Execução do fluxo
+# Fluxo completo da instalação
 clean_previous_install
 install_dependencies
 clone_repo
@@ -87,3 +89,4 @@ cleanup
 
 echo "Instalação concluída com sucesso!"
 echo "Use o comando '$EXEC_NAME' para rodar o proxy."
+``` ⬤

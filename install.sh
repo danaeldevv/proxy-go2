@@ -24,7 +24,8 @@ clean_previous_install() {
 install_dependencies() {
     echo "Atualizando repositórios e instalando dependências..."
     sudo apt-get update -y
-    sudo apt-get install -y build-essential libssl-dev libboost-system-dev libboost-thread-dev git pkg-config cmake curl
+    sudo apt-get install -y build-essential libssl-dev libboost-system-dev libboost-thread-dev \
+        git pkg-config cmake curl
     echo "Dependências instaladas."
 }
 
@@ -35,16 +36,15 @@ clone_repo() {
 
 patch_code_for_boost_asio() {
     echo "Ajustando includes para Boost.Asio..."
-    # Substitui #include <asio.hpp> por #include <boost/asio.hpp> e #include <boost/asio/ssl.hpp>
-    sed -i 's/#include <asio.hpp>/#include <boost\/asio.hpp>/' "$PROXY_DIR/proxy-manager.cpp"
-    sed -i 's/#include <asio\/ssl.hpp>/#include <boost\/asio\/ssl.hpp>/' "$PROXY_DIR/proxy-manager.cpp"
+    sed -i 's|#include <asio.hpp>|#include <boost/asio.hpp>|' "$PROXY_DIR/proxy-manager.cpp"
+    sed -i 's|#include <asio/ssl.hpp>|#include <boost/asio/ssl.hpp>|' "$PROXY_DIR/proxy-manager.cpp"
     echo "Includes ajustados."
 }
 
 build_proxy() {
     echo "Compilando proxy..."
     cd "$PROXY_DIR"
-    g++ proxy-manager.cpp -o $EXEC_NAME -lboost_system -lboost_thread -lpthread -lssl -lcrypto
+    g++ proxy-manager.cpp -o $EXEC_NAME -std=c++17 -lboost_system -lboost_thread -lpthread -lssl -lcrypto
     if [ ! -f "$EXEC_NAME" ]; then
         echo "Erro: compilação falhou, executável não criado."
         exit 1
@@ -83,4 +83,3 @@ cleanup
 
 echo "Instalação concluída com sucesso!"
 echo "Use o comando '$EXEC_NAME' para rodar o proxy."
-``` ⬤

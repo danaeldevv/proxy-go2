@@ -13,6 +13,7 @@ LOG_FILE="/var/log/proxyws.log"
 TMP_DIR=$(mktemp -d)
 REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
 GO_VERSION="1.20"  # Versão mínima do Go
+NGINX_CONF="/etc/nginx/sites-available/proxyeuro"
 
 # Função para tratamento de erros
 handle_error() {
@@ -37,7 +38,6 @@ run_step() {
     local label="$1"
     local command="$2"
     echo -ne "$label..."
-    # Run the command quietly capturing errors
     eval "$command"
     if [ $? -ne 0 ]; then
         handle_error "$label falhou!"
@@ -64,7 +64,7 @@ cleanup() {
 # Instalar dependências
 install_deps() {
     apt-get update -qq || handle_error "Atualizar pacotes falhou"
-    apt-get install -y -qq git openssl wget tar || handle_error "Instalar dependências falhou"
+    apt-get install -y -qq git openssl wget tar nginx || handle_error "Instalar dependências falhou"
 }
 
 # Instalar Go
@@ -134,6 +134,27 @@ EOF
     systemctl daemon-reload
 }
 
+# Configurar Nginx
+configure_nginx() {
+    cat > "$NGINX_CONF" <<EOF || handle_error "Criar configuração do Nginx falhou"
+server {
+    listen 80;
+    server_name example.com;
+
+    location / {
+        proxy_pass http://localhost:8080;  # Altere a porta conforme necessário
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+    ln -s "$NGINX_CONF" /etc/nginx/sites-enabled/ || handle_error "Ativar configuração do Nginx falhou"
+    systemctl restart nginx || handle_error "Reiniciar Nginx falhou"
+}
+
 main() {
     clear_dns_cache
     run_step "Removendo instalação anterior" "cleanup"
@@ -143,6 +164,7 @@ main() {
     run_step "Preparando ambiente" "prepare_environment"
     run_step "Compilando proxy" "compile_proxy"
     run_step "Instalando proxy e serviço" "install_proxy"
+    run_step "Configurando Nginx" "configure_nginx"
 
     echo -e "\n✅ Instalação concluída!"
     echo "Use o comando para abrir o menu do proxy:"

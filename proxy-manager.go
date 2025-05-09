@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -377,34 +378,26 @@ func proxyWebSocket(clientConn net.Conn) {
 		copyData(sshConn, wsConn)
 	}}
 
-	wsServer.ServeHTTP(&singleConnListener{conn: clientConn}, nil)
+	// Use responseWriter instead of singleConnListener
+	rw := &responseWriter{conn: clientConn}
+	wsServer.ServeHTTP(rw, nil)
 }
 
-// singleConnListener wraps net.Conn to make a net.Listener accepting single conn
-type singleConnListener struct {
+// responseWriter wraps net.Conn to implement http.ResponseWriter
+type responseWriter struct {
 	conn net.Conn
-	used bool
 }
 
-func (l *singleConnListener) Accept() (net.Conn, error) {
-	if l.used {
-		return nil, fmt.Errorf("Listener already accepted")
-	}
-	l.used = true
-	return l.conn, nil
+func (rw *responseWriter) Header() http.Header {
+	return http.Header{}
 }
 
-func (l *singleConnListener) Close() error {
-	return nil
+func (rw *responseWriter) Write(data []byte) (int, error) {
+	return rw.conn.Write(data)
 }
 
-func (l *singleConnListener) Addr() net.Addr {
-	return l.conn.LocalAddr()
-}
-
-// copyData copies data from src to dst
-func copyData(dst io.Writer, src io.Reader) {
-	io.Copy(dst, src)
+func (rw *responseWriter) WriteHeader(statusCode int) {
+	// No-op, as we are not using HTTP status codes in this context
 }
 
 // handleSocks handles SOCKS5 connections, responds HTTP/1.1 200 OK and proxies to localhost:22

@@ -45,7 +45,7 @@ build_proxy() {
     cd "$PROXY_DIR"
 
     # Compilar o arquivo proxy-manager.cpp
-    g++ proxy-manager.cpp -o $EXEC_NAME -lssl -lcrypto -levent -lpthread
+    g++ proxy-manager.cpp -o $EXEC_NAME -I/usr/include/event2 -lssl -lcrypto -levent -lpthread
 
     if [ ! -f "$EXEC_NAME" ]; then
         echo "Erro: compilação falhou, executável não criado."
@@ -89,4 +89,3 @@ cleanup
 
 echo "Instalação concluída com sucesso!"
 echo "Use o comando '$EXEC_NAME' para rodar o proxy."
-``` ⬤

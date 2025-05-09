@@ -2,7 +2,7 @@
 
 set -e
 
-PROXY_REPO_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/refs/heads/main/proxy-manager.go"   # <-- Substitua pelo URL correto do seu repositório
+PROXY_FILE_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/refs/heads/main/proxy-manager.go"
 PROXY_DIR="proxy-cpp"
 EXEC_NAME="proxy"
 
@@ -28,23 +28,24 @@ install_dependencies() {
     sudo apt-get update -y
 
     # Instala build-essential, OpenSSL e libevent, git, pkg-config, make, cmake
-    sudo apt-get install -y build-essential libssl-dev libevent-dev git pkg-config cmake
+    sudo apt-get install -y build-essential libssl-dev libevent-dev git pkg-config cmake curl
 
     echo "Dependências instaladas."
 }
 
-# Clonar ou atualizar repositorio
-clone_repo() {
-    echo "Clonando repositório..."
-    git clone "$PROXY_REPO_URL" "$PROXY_DIR"
+# Baixar o arquivo do proxy
+download_proxy_file() {
+    echo "Baixando arquivo do proxy..."
+    mkdir -p "$PROXY_DIR"
+    curl -L -o "$PROXY_DIR/proxy-manager.go" "$PROXY_FILE_URL"
 }
 
 # Compilar proxy
 build_proxy() {
     echo "Compilando proxy..."
     cd "$PROXY_DIR"
-    # Assumindo projeto C++ simples sem cmake: compile proxy.cpp com flags libs SSL e event
-    g++ proxy.cpp -o $EXEC_NAME -lssl -lcrypto -levent -lpthread
+    # Assumindo que você tem um Makefile ou um comando de compilação adequado
+    g++ proxy-manager.go -o $EXEC_NAME -lssl -lcrypto -levent -lpthread
 
     if [ ! -f "$EXEC_NAME" ]; then
         echo "Erro: compilação falhou, executável não criado."
@@ -83,12 +84,10 @@ cleanup() {
 # Fluxo completo
 clean_previous_install
 install_dependencies
-clone_repo
+download_proxy_file
 build_proxy
 install_proxy
 cleanup
 
 echo "Instalação concluída com sucesso!"
 echo "Use o comando '$EXEC_NAME' para rodar o proxy."
-
-``` ⬤

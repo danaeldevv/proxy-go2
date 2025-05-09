@@ -2,7 +2,7 @@
 
 set -e
 
-PROXY_REPO_URL="https://github.com/usuario/proxy.git"   # <-- Substitua pelo URL correto do seu repositório
+PROXY_REPO_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/refs/heads/main/proxy-manager.go"   # <-- Substitua pelo URL correto do seu repositório
 PROXY_DIR="proxy-cpp"
 EXEC_NAME="proxy"
 

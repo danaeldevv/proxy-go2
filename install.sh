@@ -68,6 +68,7 @@ cleanup() {
 }
 
 install_deps() {
+    apt-get update -qq || handle_error "Atualizar pacotes falhou"
     apt-get install -y -qq git openssl wget tar nginx || handle_error "Instalar dependências falhou"
 }
 
@@ -98,7 +99,7 @@ generate_certificates() {
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout /etc/ssl/proxyeuro/key.pem \
         -out /etc/ssl/proxyeuro/cert.pem \
-        -subj "/C=BR/ST= State/L=City/O=Organization/OU=Unit/CN=example.com" || handle_error "Gerar certificados falhou"
+        -subj "/C=BR/ST=State/L=City/O=Organization/OU=Unit/CN=example.com" || handle_error "Gerar certificados falhou"
 }
 
 prepare_environment() {
@@ -136,8 +137,8 @@ EOF
 configure_nginx() {
     cat > "$NGINX_CONF" <<EOF || handle_error "Criar configuração do Nginx falhou"
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
+    listen 80;
+    listen [::]:80;
 
     server_name _;
 
@@ -152,10 +153,11 @@ server {
 }
 EOF
 
-    # Verifica se o link já existe e remove antes de criar um novo
+    # Remove link antigo se existir
     if [ -L "$NGINX_LINK" ]; then
         rm -f "$NGINX_LINK"
     fi
+
     ln -s "$NGINX_CONF" "$NGINX_LINK"
 
     # Testa a configuração antes de recarregar

@@ -2,7 +2,7 @@
 
 set -e
 
-PROXY_FILE_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/refs/heads/main/proxy-manager.go"
+PROXY_FILE_URL="https://raw.githubusercontent.com/jeanfraga33/proxy-go2/refs/heads/main/proxy-manager.cpp"
 PROXY_DIR="proxy-cpp"
 EXEC_NAME="proxy"
 

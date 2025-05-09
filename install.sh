@@ -68,6 +68,7 @@ cleanup() {
 }
 
 install_deps() {
+    apt-get update -qq || handle_error "Atualizar pacotes falhou"
     apt-get install -y -qq git openssl wget tar nginx || handle_error "Instalar dependências falhou"
 }
 
@@ -98,7 +99,7 @@ generate_certificates() {
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout /etc/ssl/proxyeuro/key.pem \
         -out /etc/ssl/proxyeuro/cert.pem \
-        -subj "/C=BR/ST=State/L=City/O=Organization/OU=Unit/CN=example.com" || handle_error "Gerar certificados falhou"
+        -subj "/C=BR/ST= State/L=City/O=Organization/OU=Unit/CN=example.com" || handle_error "Gerar certificados falhou"
 }
 
 prepare_environment() {
@@ -152,8 +153,11 @@ server {
 }
 EOF
 
-    # Link da configuração
-    ln -sf "$NGINX_CONF" "$NGINX_LINK"
+    # Verifica se o link já existe e remove antes de criar um novo
+    if [ -L "$NGINX_LINK" ]; then
+        rm -f "$NGINX_LINK"
+    fi
+    ln -s "$NGINX_CONF" "$NGINX_LINK"
 
     # Testa a configuração antes de recarregar
     nginx -t || handle_error "Teste da configuração do Nginx falhou. Corrija o erro e tente novamente."

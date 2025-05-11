@@ -488,6 +488,10 @@ void interactive_menu() {
         std::cout << "Escolha uma opcao: ";
         int choice;
         std::cin >> choice;
+        if (open_ports.count(port)) {
+            std::cout << "Erro: A porta " << port << " já está aberta!\n";
+            return;
+        }
         if (choice == 1) {
             std::cout << "Digite a porta para abrir: ";
             int port; std::cin >> port;

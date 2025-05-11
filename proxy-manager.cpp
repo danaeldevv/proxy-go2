@@ -419,11 +419,23 @@ void run_proxy(int port) {
     int server_fd_local = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd_local < 0) {
         log("? Erro ao criar socket do servidor.", "ERROR");
+        {
+            std::lock_guard<std::mutex> lock(ports_mutex);
+            open_ports.erase(port);
+        }
         return;
     }
 
     int opt = 1;
-    setsockopt(server_fd_local, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(server_fd_local, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        log("? Erro ao definir SO_REUSEADDR.", "ERROR");
+        close(server_fd_local);
+        {
+            std::lock_guard<std::mutex> lock(ports_mutex);
+            open_ports.erase(port);
+        }
+        return;
+    }
 
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
@@ -431,14 +443,22 @@ void run_proxy(int port) {
     server_addr.sin_port = htons(port);
 
     if (bind(server_fd_local, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        log("? Erro ao vincular porta.", "ERROR");
+        log("? Erro ao vincular porta " + std::to_string(port) + ". A porta pode já estar em uso.", "ERROR");
         close(server_fd_local);
+        {
+            std::lock_guard<std::mutex> lock(ports_mutex);
+            open_ports.erase(port);
+        }
         return;
     }
 
     if (listen(server_fd_local, SOMAXCONN) < 0) {
         log("? Erro ao escutar conexões.", "ERROR");
         close(server_fd_local);
+        {
+            std::lock_guard<std::mutex> lock(ports_mutex);
+            open_ports.erase(port);
+        }
         return;
     }
 
@@ -453,7 +473,13 @@ void run_proxy(int port) {
 
     while (running.load()) {
         asio::ip::tcp::socket socket(io_context);
-        acceptor.accept(socket); // Accept a new connection
+        try {
+            acceptor.accept(socket); // Accept a new connection
+        } catch (const std::exception& e) {
+            if (!running.load()) break; // Exit loop if stopping
+            log(std::string("? Erro ao aceitar conexão: ") + e.what(), "ERROR");
+            continue;
+        }
 
         std::thread([socket = std::move(socket)]() mutable {
             int client_fd = socket.native_handle();

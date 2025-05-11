@@ -31,7 +31,6 @@ namespace asio = boost::asio;
 #define BUFFER_SIZE 8192
 
 // Globals
-int server_fd = -1;
 std::atomic<bool> running(true);
 const std::string pid_file_path = "/var/run/proxyws.pid";
 const std::string log_file_path = "/var/log/proxyws.log";
@@ -50,13 +49,6 @@ void log(const std::string& msg, const std::string& level = "INFO") {
     log_file << "[" << dt << "] [" << level << "] " << msg << std::endl;
 }
 
-// Set fd to nonblocking mode
-int set_non_blocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 // Cleanup SSL resources
 void cleanup_ssl() {
     if (ssl_ctx) {
@@ -67,16 +59,13 @@ void cleanup_ssl() {
 }
 
 // Initialize SSL context for TLS
-// Atualizar a função setup_ssl para lidar com erros de certificado
 void setup_ssl() {
-    // Verificar se os arquivos de certificado e chave existem
     const std::string cert_path = "cert.pem";
     const std::string key_path = "key.pem";
 
     if (access(cert_path.c_str(), F_OK) == -1 || access(key_path.c_str(), F_OK) == -1) {
         log("? Arquivos de certificado SSL não encontrados. Gerando certificados autoassinados...", "WARNING");
 
-        // Gerar certificados autoassinados
         std::string command = "openssl req -x509 -newkey rsa:2048 -keyout " + key_path +
                               " -out " + cert_path + " -days 365 -nodes -subj \"/CN=localhost\"";
         if (system(command.c_str()) != 0) {
@@ -86,7 +75,6 @@ void setup_ssl() {
         log("?? Certificados autoassinados gerados com sucesso.");
     }
 
-    // Inicializar SSL
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
@@ -96,7 +84,6 @@ void setup_ssl() {
         exit(1);
     }
 
-    // Carregar os arquivos de certificado e chave
     if (!SSL_CTX_use_certificate_file(ssl_ctx, cert_path.c_str(), SSL_FILETYPE_PEM)) {
         log("? Erro ao carregar o arquivo de certificado: " + cert_path, "ERROR");
         exit(1);
@@ -109,25 +96,24 @@ void setup_ssl() {
     log("?? Certificados SSL carregados com sucesso.");
 }
 
-// Helper: check if connection data indicates TLS (WSS)
+// Helper functions (is_tls_connection, is_socks5_connection, is_websocket_request) remain unchanged
+
 bool is_tls_connection(const char* buffer, size_t len) {
     if(len < 1) return false;
     if (buffer[0] == 0x16 && len > 5) {
         int major = buffer[1];
         int minor = buffer[2];
-        if (major == 3 && (minor == 1 || minor == 2 || minor == 3 || minor == 4))
+        if (major == 3 && (minor >= 1 && minor <= 4))
             return true;
     }
     return false;
 }
 
-// Helper: check if data seems SOCKS5 handshake
 bool is_socks5_connection(const char* buffer, size_t len) {
     if (len < 1) return false;
     return (buffer[0] == 0x05);
 }
 
-// Helper: check if data is HTTP WebSocket upgrade request (simple check)
 bool is_websocket_request(const char* buffer, size_t len) {
     std::string data(buffer, len);
     if (data.find("GET ") == 0 &&
@@ -138,7 +124,9 @@ bool is_websocket_request(const char* buffer, size_t len) {
     return false;
 }
 
-// Copy data bidirectionally between sockets or SSLs
+// proxy_data, handle_websocket, handle_socks, handle_connection functions remain unchanged
+// (Use the versions from the previous full code you have)
+
 void proxy_data(int src_fd, int dst_fd, SSL* src_ssl = nullptr, SSL* dst_ssl = nullptr) {
     char buffer[BUFFER_SIZE];
     ssize_t bytes;
@@ -163,7 +151,6 @@ void proxy_data(int src_fd, int dst_fd, SSL* src_ssl = nullptr, SSL* dst_ssl = n
     }
 }
 
-// Handle WebSocket proxy to SSH (with optional SSL)
 void handle_websocket(int client_fd, SSL* client_ssl) {
     int ssh_fd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in ssh_addr{};
@@ -199,7 +186,6 @@ void handle_websocket(int client_fd, SSL* client_ssl) {
     t2.detach();
 }
 
-// Handle SOCKS5 proxy connection to SSH
 void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     const char* http_ok = "HTTP/1.1 200 OK\r\n\r\n";
     send(client_fd, http_ok, strlen(http_ok), 0);
@@ -269,7 +255,6 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     t2.detach();
 }
 
-// Handle a new client connection: detect if TLS, websocket or socks, dispatch accordingly
 void handle_connection(int client_fd) {
     char buf[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT); 
@@ -410,84 +395,39 @@ void show_status() {
 }
 
 void run_proxy(int port) {
-    // Mark port as open
     {
         std::lock_guard<std::mutex> lock(ports_mutex);
         open_ports[port] = true;
     }
 
-    int server_fd_local = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd_local < 0) {
-        log("? Erro ao criar socket do servidor.", "ERROR");
-        {
-            std::lock_guard<std::mutex> lock(ports_mutex);
-            open_ports.erase(port);
-        }
-        return;
-    }
+    try {
+        asio::io_context io_context;
 
-    int opt = 1;
-    if (setsockopt(server_fd_local, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        log("? Erro ao definir SO_REUSEADDR.", "ERROR");
-        close(server_fd_local);
-        {
-            std::lock_guard<std::mutex> lock(ports_mutex);
-            open_ports.erase(port);
-        }
-        return;
-    }
+        asio::ip::tcp::acceptor acceptor(io_context);
 
-    sockaddr_in server_addr{};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+        asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), port);
 
-    if (bind(server_fd_local, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        log("? Erro ao vincular porta " + std::to_string(port) + ". A porta pode já estar em uso.", "ERROR");
-        close(server_fd_local);
-        {
-            std::lock_guard<std::mutex> lock(ports_mutex);
-            open_ports.erase(port);
-        }
-        return;
-    }
+        acceptor.open(endpoint.protocol());
+        acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
+        acceptor.bind(endpoint);
+        acceptor.listen(asio::socket_base::max_connections);
 
-    if (listen(server_fd_local, SOMAXCONN) < 0) {
-        log("? Erro ao escutar conexões.", "ERROR");
-        close(server_fd_local);
-        {
-            std::lock_guard<std::mutex> lock(ports_mutex);
-            open_ports.erase(port);
-        }
-        return;
-    }
+        log("?? Proxy iniciado na porta " + std::to_string(port));
 
-    set_non_blocking(server_fd_local);
-
-    log("?? Proxy iniciado na porta " + std::to_string(port));
-
-    asio::io_context io_context;
-
-    // Create an acceptor to handle incoming connections
-    asio::ip::tcp::acceptor acceptor(io_context, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port));
-
-    while (running.load()) {
-        asio::ip::tcp::socket socket(io_context);
-        try {
+        while (running.load()) {
+            asio::ip::tcp::socket socket(io_context);
             acceptor.accept(socket); // Accept a new connection
-        } catch (const std::exception& e) {
-            if (!running.load()) break; // Exit loop if stopping
-            log(std::string("? Erro ao aceitar conexão: ") + e.what(), "ERROR");
-            continue;
+
+            std::thread([socket = std::move(socket)]() mutable {
+                int client_fd = socket.native_handle();
+                handle_connection(client_fd);
+            }).detach();
         }
 
-        std::thread([socket = std::move(socket)]() mutable {
-            int client_fd = socket.native_handle();
-            handle_connection(client_fd);
-        }).detach();
+        acceptor.close();
+    } catch (const std::exception& e) {
+        log(std::string("? Erro no proxy na porta ") + std::to_string(port) + ": " + e.what(), "ERROR");
     }
-
-    close(server_fd_local);
 
     {
         std::lock_guard<std::mutex> lock(ports_mutex);

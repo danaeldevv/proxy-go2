@@ -488,13 +488,17 @@ void interactive_menu() {
         std::cout << "Escolha uma opcao: ";
         int choice;
         std::cin >> choice;
-        if (open_ports.count(port)) {
-            std::cout << "Erro: A porta " << port << " já está aberta!\n";
-            return;
-        }
+
+        int port;
+
         if (choice == 1) {
             std::cout << "Digite a porta para abrir: ";
-            int port; std::cin >> port;
+            std::cin >> port;
+            if (open_ports.count(port)) {
+                std::cout << "Erro: A porta " << port << " já está aberta!\n";
+                std::cin.ignore(); std::cin.get();
+                continue;
+            }
             if (port > 0 && port <= 65535) {
                 std::thread(run_proxy, port).detach();
                 std::cout << "Proxy iniciado na porta " << port << ". Pressione ENTER para continuar...";
@@ -505,7 +509,7 @@ void interactive_menu() {
             }
         } else if (choice == 2) {
             std::cout << "Digite a porta para encerrar: ";
-            int port; std::cin >> port;
+            std::cin >> port;
             std::lock_guard<std::mutex> lock(ports_mutex);
             if(open_ports.count(port)) {
                 std::string cmd = "fuser -k " + std::to_string(port) + "/tcp";
@@ -540,3 +544,4 @@ int main() {
 
     return 0;
 }
+

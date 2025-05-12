@@ -21,6 +21,9 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <sys/wait.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <dirent.h>
 
 namespace asio = boost::asio;
 
@@ -379,8 +382,63 @@ pid_t launch_proxy_process(int port) {
 std::map<int, pid_t> proxy_processes;
 std::mutex proxy_processes_mutex;
 
+// Scan child processes to update proxy_processes map (to maintain proxies after menu restart)
+void scan_running_proxies() {
+    proxy_processes.clear();
+    DIR* proc_dir = opendir("/proc");
+    if (!proc_dir)
+        return;
+
+    struct dirent* entry;
+    while ((entry = readdir(proc_dir)) != nullptr) {
+        if (entry->d_type != DT_DIR)
+            continue;
+        pid_t pid = atoi(entry->d_name);
+        if (pid <= 0)
+            continue;
+
+        std::string cmdline_path = std::string("/proc/") + entry->d_name + "/cmdline";
+        std::ifstream cmd_file(cmdline_path);
+        if (!cmd_file.is_open())
+            continue;
+
+        std::string cmdline;
+        std::getline(cmd_file, cmdline, '\0'); // Read first arg
+
+        std::string exe_name = cmdline;
+        if (exe_name.find("proxy-manager") == std::string::npos)
+            continue;
+
+        // Try to get port argument (second argument)
+        cmd_file.seekg(0);
+        std::string all_cmdline;
+        std::getline(cmd_file, all_cmdline, '\0');
+        size_t pos = all_cmdline.find('\0');
+        if (pos != std::string::npos)
+            all_cmdline.erase(0, pos+1);
+        else
+            continue;
+
+        // all_cmdline may contain multiple null-separated strings, get first argument after exe
+        std::string port_str;
+        size_t next_null = all_cmdline.find('\0');
+        if (next_null != std::string::npos)
+            port_str = all_cmdline.substr(0, next_null);
+        else
+            port_str = all_cmdline;
+
+        int port = atoi(port_str.c_str());
+        if (port > 0) {
+            std::lock_guard<std::mutex> lock(proxy_processes_mutex);
+            proxy_processes[port] = pid;
+        }
+    }
+    closedir(proc_dir);
+}
+
 // Interactive menu that controls proxy processes
 void interactive_menu() {
+    scan_running_proxies();
     while(true) {
         system("clear");
         {
@@ -465,7 +523,8 @@ void interactive_menu() {
                 std::cin.get();
                 continue;
             }
-            kill(pid, SIGTERM);
+            // Para encerramento mais seguro usa SIGINT
+            kill(pid, SIGINT);
             waitpid(pid, nullptr, 0);
             {
                 std::lock_guard<std::mutex> lock(proxy_processes_mutex);
@@ -475,7 +534,6 @@ void interactive_menu() {
             std::cin.ignore();
             std::cin.get();
         } else if(choice == 3) {
-            // Sair sem encerrar proxies
             std::cout << "Saindo... Proxies permanecerão ativos.\n";
             break;
         } else {

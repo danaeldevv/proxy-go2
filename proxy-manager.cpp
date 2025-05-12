@@ -34,17 +34,17 @@ const std::string log_file_path = "/var/log/proxyws.log";
 std::mutex log_mutex;
 SSL_CTX *ssl_ctx;
 
-// Função para registrar logs
+// Function to log messages
 void log(const std::string& msg, const std::string& level = "INFO") {
     std::lock_guard<std::mutex> lock(log_mutex);
     std::ofstream log_file(log_file_path, std::ios::app);
-    time_t now = time(0);
+    time_t now = time(nullptr);
     char* dt = ctime(&now);
-    if(dt) dt[strlen(dt) - 1] = '\0'; // Remove newline
+    if (dt) dt[strlen(dt)-1] = '\0'; // Remove newline
     log_file << "[" << (dt ? dt : "unknown time") << "] [" << level << "] " << msg << std::endl;
 }
 
-// Função para limpar recursos SSL
+// Cleanup SSL resources
 void cleanup_ssl() {
     if (ssl_ctx) {
         SSL_CTX_free(ssl_ctx);
@@ -53,16 +53,17 @@ void cleanup_ssl() {
     EVP_cleanup();
 }
 
-// Função para configurar o contexto SSL
+// Setup SSL context
 void setup_ssl() {
     const std::string cert_path = "cert.pem";
     const std::string key_path = "key.pem";
 
     if (access(cert_path.c_str(), F_OK) == -1 || access(key_path.c_str(), F_OK) == -1) {
-        log("? Arquivos de certificado SSL não encontrados. Gerando certificados autoassinados...", "WARNING");
+        log("? Certificado SSL não encontrado. Gerando autoassinado...", "WARNING");
 
         std::string command = "openssl req -x509 -newkey rsa:2048 -keyout " + key_path +
-                              " -out " + cert_path + " -days 365 -nodes -subj \"/CN=localhost\"";
+                              " -out " + cert_path +
+                              " -days 365 -nodes -subj \"/CN=localhost\"";
         if (system(command.c_str()) != 0) {
             log("? Erro ao gerar certificados autoassinados.", "ERROR");
             exit(1);
@@ -75,55 +76,53 @@ void setup_ssl() {
     SSL_load_error_strings();
     ssl_ctx = SSL_CTX_new(TLS_server_method());
     if (!ssl_ctx) {
-        log("? Erro ao configurar SSL.", "ERROR");
+        log("? Erro ao configurar contexto SSL.", "ERROR");
         exit(1);
     }
 
     if (!SSL_CTX_use_certificate_file(ssl_ctx, cert_path.c_str(), SSL_FILETYPE_PEM)) {
-        log("? Erro ao carregar o arquivo de certificado: " + cert_path, "ERROR");
+        log("? Erro ao carregar arquivo de certificado: " + cert_path, "ERROR");
         exit(1);
     }
     if (!SSL_CTX_use_PrivateKey_file(ssl_ctx, key_path.c_str(), SSL_FILETYPE_PEM)) {
-        log("? Erro ao carregar o arquivo de chave privada: " + key_path, "ERROR");
+        log("? Erro ao carregar arquivo de chave privada: " + key_path, "ERROR");
         exit(1);
     }
 
     log("?? Certificados SSL carregados com sucesso.");
 }
 
-// Helper functions
+// Helpers to detect connection types
 bool is_tls_connection(const char* buffer, size_t len) {
-    if(len < 1) return false;
+    if (len < 1) return false;
     if (buffer[0] == 0x16 && len > 5) {
         int major = buffer[1];
         int minor = buffer[2];
-        if (major == 3 && (minor >= 1 && minor <= 4))
-            return true;
+        return (major == 3 && (minor >= 1 && minor <= 4));
     }
     return false;
 }
 
 bool is_socks5_connection(const char* buffer, size_t len) {
-    if(len < 1) return false;
+    if (len < 1) return false;
     return (buffer[0] == 0x05);
 }
 
 bool is_websocket_request(const char* buffer, size_t len) {
     std::string data(buffer, len);
     if (data.find("GET ") == 0 &&
-        (data.find("Upgrade: websocket") != std::string::npos || data.find("upgrade: websocket") != std::string::npos) &&
-        (data.find("Connection: Upgrade") != std::string::npos || data.find("connection: upgrade") != std::string::npos)) {
+       (data.find("Upgrade: websocket") != std::string::npos || data.find("upgrade: websocket") != std::string::npos) &&
+       (data.find("Connection: Upgrade") != std::string::npos || data.find("connection: upgrade") != std::string::npos)) {
         return true;
     }
     return false;
 }
 
-// Proxy functions (proxy_data, handle_websocket, handle_socks, handle_connection)
-
+// Bidirectional data proxying between sockets or SSLs
 void proxy_data(int src_fd, int dst_fd, SSL* src_ssl = nullptr, SSL* dst_ssl = nullptr) {
     char buffer[BUFFER_SIZE];
     ssize_t bytes;
-    while (running) {
+    while (running.load()) {
         if (src_ssl) {
             bytes = SSL_read(src_ssl, buffer, sizeof(buffer));
             if (bytes <= 0) break;
@@ -144,6 +143,7 @@ void proxy_data(int src_fd, int dst_fd, SSL* src_ssl = nullptr, SSL* dst_ssl = n
     }
 }
 
+// Handle WebSocket proxy to SSH
 void handle_websocket(int client_fd, SSL* client_ssl) {
     int ssh_fd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in ssh_addr{};
@@ -179,6 +179,7 @@ void handle_websocket(int client_fd, SSL* client_ssl) {
     t2.detach();
 }
 
+// Handle SOCKS5 proxy
 void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     const char* http_ok = "HTTP/1.1 200 OK\r\n\r\n";
     send(client_fd, http_ok, strlen(http_ok), 0);
@@ -191,7 +192,7 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     }
 
     if (buf[0] != 0x05) {
-        log("? Protocolo nao suportado != SOCKS5", "WARNING");
+        log("? Protocolo não suportado != SOCKS5", "WARNING");
         close(client_fd);
         return;
     }
@@ -206,7 +207,7 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     }
 
     if (buf[1] != 0x01) {
-        log("? SOCKS comando nao suportado.", "WARNING");
+        log("? SOCKS comando não suportado.", "WARNING");
         close(client_fd);
         return;
     }
@@ -248,6 +249,7 @@ void handle_socks(int client_fd, SSL* client_ssl = nullptr) {
     t2.detach();
 }
 
+// Handle incoming connections
 void handle_connection(int client_fd) {
     char buf[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT);
@@ -310,18 +312,17 @@ void handle_connection(int client_fd) {
     }
 }
 
-// Signal handler to set running flag to false
+// Signal handler to stop running
 void signal_handler(int signal) {
-    if (signal == SIGINT || signal == SIGTERM) {
-        running = false;
+    if(signal == SIGINT || signal == SIGTERM) {
+        running.store(false);
         log("?? Sinal recebido para encerrar proxy.");
     }
 }
 
-// Função que executa o proxy na porta (modo worker)
+// Run proxy worker on given port
 void run_proxy(int port) {
-    running = true;
-
+    running.store(true);
     try {
         asio::io_context io_context;
         asio::ip::tcp::acceptor acceptor(io_context);
@@ -335,9 +336,8 @@ void run_proxy(int port) {
 
         log("?? Proxy iniciado na porta " + std::to_string(port));
 
-        while (running.load()) {
+        while(running.load()) {
             asio::ip::tcp::socket socket(io_context);
-
             try {
                 acceptor.accept(socket);
             } catch (const std::exception& e) {
@@ -356,106 +356,113 @@ void run_proxy(int port) {
     } catch (const std::exception& e) {
         log(std::string("? Erro no proxy na porta ") + std::to_string(port) + ": " + e.what(), "ERROR");
     }
-
     log("?? Proxy encerrado na porta " + std::to_string(port));
 }
 
-// Função para criar processo filho rodando o proxy em determinada porta
+// Fork and launch proxy process for port
 pid_t launch_proxy_process(int port) {
     pid_t pid = fork();
-    if (pid == -1) {
-        log("Erro ao forkar processo proxy para porta " + std::to_string(port), "ERROR");
+    if(pid == -1) {
+        log("Erro ao fork processo proxy para porta " + std::to_string(port), "ERROR");
         return -1;
     }
-    if (pid == 0) {
-        // Filho: roda o proxy
+    if(pid == 0) {
         setup_ssl();
         run_proxy(port);
         cleanup_ssl();
         exit(0);
     }
-    // Pai: retorna PID do filho
-    log("Processo proxy iniciado para porta " + std::to_string(port) + ", PID: " + std::to_string(pid));
+    log("Processo proxy iniciado: porta " + std::to_string(port) + ", PID " + std::to_string(pid));
     return pid;
 }
 
 std::map<int, pid_t> proxy_processes;
 std::mutex proxy_processes_mutex;
 
+// Interactive menu that controls proxy processes
 void interactive_menu() {
-    while (true) {
+    while(true) {
         system("clear");
         {
             std::lock_guard<std::mutex> lock(proxy_processes_mutex);
-            std::cout << "=== Proxy ativo ===\n";
+            std::cout << "=== Proxies Ativos ===\n";
             if(proxy_processes.empty()) {
-                std::cout << "Nenhum proxy ativo.\n";
+                std::cout << "(Nenhum proxy ativo)\n";
             } else {
-                for (const auto& p : proxy_processes) {
-                    std::cout << "Porta " << p.first << ": PID " << p.second << "\n";
-                }
+                for(auto& p : proxy_processes)
+                    std::cout << "Porta " << p.first << " - PID " << p.second << "\n";
             }
-            std::cout << "==================\n";
+            std::cout << "======================\n";
         }
-        std::cout << "1) Abrir nova porta\n2) Fechar proxy em uma porta\n3) Sair\nEscolha: ";
+
+        std::cout << "1) Abrir nova porta\n2) Fechar proxy numa porta\n3) Sair\nEscolha: ";
         int choice;
-        if (!(std::cin >> choice)) {
+        if(!(std::cin >> choice)) {
             std::cin.clear();
-            std::cin.ignore(10000,'\n');
+            std::cin.ignore(10000, '\n');
             continue;
         }
 
         int port;
-        if (choice == 1) {
-            std::cout << "Informe a porta: ";
-            if (!(std::cin >> port)) {
+        if(choice == 1) {
+            std::cout << "Porta a abrir: ";
+            if(!(std::cin >> port)) {
                 std::cin.clear();
-                std::cin.ignore(10000,'\n');
-                std::cout << "Entrada invalida. ENTER para continuar...";
+                std::cin.ignore(10000, '\n');
+                std::cout << "Entrada inválida. Pressione ENTER para continuar...";
                 std::cin.ignore();
+                std::cin.get();
                 continue;
             }
-            if(port <=0 || port >65535) {
-                std::cout << "Porta invalida. ENTER para continuar...";
-                std::cin.ignore(); std::cin.get();
+            if(port <= 0 || port > 65535) {
+                std::cout << "Porta inválida. Pressione ENTER para continuar...";
+                std::cin.ignore();
+                std::cin.get();
                 continue;
             }
             {
                 std::lock_guard<std::mutex> lock(proxy_processes_mutex);
                 if(proxy_processes.count(port)) {
-                    std::cout << "Porta ja esta aberta. ENTER para continuar...";
-                    std::cin.ignore(); std::cin.get();
+                    std::cout << "Porta já está aberta. Pressione ENTER para continuar...";
+                    std::cin.ignore();
+                    std::cin.get();
                     continue;
                 }
             }
             pid_t pid = launch_proxy_process(port);
             if(pid == -1) {
-                std::cout << "Falha ao iniciar proxy porta " << port << ". ENTER para continuar...";
-                std::cin.ignore(); std::cin.get();
+                std::cout << "Falha ao iniciar proxy. Pressione ENTER...";
+                std::cin.ignore();
+                std::cin.get();
             } else {
-                std::lock_guard<std::mutex> lock(proxy_processes_mutex);
-                proxy_processes[port] = pid;
-                std::cout << "Proxy iniciado na porta " << port << ". PID: " << pid << ". ENTER para continuar...";
-                std::cin.ignore(); std::cin.get();
+                {
+                    std::lock_guard<std::mutex> lock(proxy_processes_mutex);
+                    proxy_processes[port] = pid;
+                }
+                std::cout << "Proxy iniciado na porta " << port << " (PID " << pid << "). Pressione ENTER...";
+                std::cin.ignore();
+                std::cin.get();
             }
-        } else if (choice == 2) {
-            std::cout << "Informe a porta para fechar: ";
-            if (!(std::cin >> port)) {
+        } else if(choice == 2) {
+            std::cout << "Porta a fechar: ";
+            if(!(std::cin >> port)) {
                 std::cin.clear();
-                std::cin.ignore(10000,'\n');
-                std::cout << "Entrada invalida. ENTER para continuar...";
-                std::cin.ignore(); continue;
+                std::cin.ignore(10000, '\n');
+                std::cout << "Entrada inválida. Pressione ENTER para continuar...";
+                std::cin.ignore();
+                std::cin.get();
+                continue;
             }
             pid_t pid = -1;
             {
                 std::lock_guard<std::mutex> lock(proxy_processes_mutex);
-                if(proxy_processes.count(port)) {
+                if(proxy_processes.count(port))
                     pid = proxy_processes[port];
-                }
             }
             if(pid == -1) {
-                std::cout << "Porta nao esta aberta. ENTER para continuar...";
-                std::cin.ignore(); std::cin.get();
+                std::cout << "Proxy não está aberto nessa porta. Pressione ENTER...";
+                std::cin.ignore();
+                std::cin.get();
                 continue;
             }
             kill(pid, SIGTERM);
@@ -464,24 +471,17 @@ void interactive_menu() {
                 std::lock_guard<std::mutex> lock(proxy_processes_mutex);
                 proxy_processes.erase(port);
             }
-            std::cout << "Proxy na porta " << port << " encerrado. ENTER para continuar...";
-            std::cin.ignore(); std::cin.get();
-        } else if (choice == 3) {
-            std::cout << "Encerrando todos os proxies...\n";
-            {
-                std::lock_guard<std::mutex> lock(proxy_processes_mutex);
-                for(auto& p : proxy_processes) {
-                    kill(p.second, SIGTERM);
-                    waitpid(p.second, nullptr, 0);
-                    log("Processo proxy encerrado na porta " + std::to_string(p.first));
-                }
-                proxy_processes.clear();
-            }
-            std::cout << "Saindo...\n";
+            std::cout << "Proxy na porta " << port << " encerrado. Pressione ENTER...";
+            std::cin.ignore();
+            std::cin.get();
+        } else if(choice == 3) {
+            // Sair sem encerrar proxies
+            std::cout << "Saindo... Proxies permanecerão ativos.\n";
             break;
         } else {
-            std::cout << "Opcao invalida. ENTER para continuar...";
-            std::cin.ignore(); std::cin.get();
+            std::cout << "Opção inválida. Pressione ENTER...";
+            std::cin.ignore();
+            std::cin.get();
         }
     }
 }
@@ -491,7 +491,6 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signal_handler);
 
     if(argc == 2) {
-        // Modo proxy worker (subprocesso)
         int port = std::stoi(argv[1]);
         setup_ssl();
         run_proxy(port);
@@ -499,8 +498,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Modo menu gestor
     interactive_menu();
-
     return 0;
 }

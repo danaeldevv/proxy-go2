@@ -18,7 +18,6 @@ remove_previous_installation() {
 # Função para instalar Git e outras dependências
 install_dependencies() {
     echo "Instalando Git e dependências..."
-    sudo apt-get update
     sudo apt-get install -y git python3 python3-pip
     pip3 install websockets
     echo "Git e dependências instaladas."

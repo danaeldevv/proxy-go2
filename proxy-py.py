@@ -13,7 +13,7 @@ OPENSSH_PORT = 22
 class ProxyServer:
     def __init__(self):
         self.open_ports = {}
-        self.loop = asyncio.new_event_loop()
+        self.loop = asyncio.get_event_loop()
         self.running = True
 
     async def proxy_bidirectional(self, reader1, writer1, reader2, writer2):
@@ -281,7 +281,7 @@ class ProxyServer:
             elif choice == '3':
                 print("[INFO] Exiting proxy.")
                 self.running = False
-                # Optionally, here you can stop open servers (not implemented)
+                # Clean shutdowns of servers can be implemented here if needed
                 break
             else:
                 print("[ERROR] Invalid option. Try again.")
@@ -295,7 +295,6 @@ class ProxyServer:
             print("\n[INFO] Interrupted by user, exiting.")
             self.running = False
             menu_thread.join()
-
 
 if __name__ == "__main__":
     proxy_server = ProxyServer()

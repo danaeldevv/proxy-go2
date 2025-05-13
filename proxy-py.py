@@ -5,6 +5,7 @@ import socket
 import threading
 import sys
 import struct
+import subprocess
 
 OPENSSH_HOST = '127.0.0.1'
 OPENSSH_PORT = 22
@@ -41,6 +42,12 @@ class ProxyServer:
         print(f"[WebSocket] Connection from {ip}")
 
         try:
+            # Send HTTP 101 Switching Protocols response before proxying
+            raw_writer = websocket.writer.transport
+            upgrade_response = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+            raw_writer.write(upgrade_response)
+            await raw_writer.drain()
+
             reader_ssh, writer_ssh = await asyncio.open_connection(OPENSSH_HOST, OPENSSH_PORT)
 
             async def ws_to_ssh():
@@ -89,6 +96,10 @@ class ProxyServer:
         print(f"[SOCKS] Connection from {ip}")
 
         try:
+            # Send HTTP 200 OK response first
+            writer.write(b"HTTP/1.1 200 OK\r\n\r\n")
+            await writer.drain()
+
             data = await reader.read(2)
             if len(data) < 2:
                 raise Exception("Invalid SOCKS handshake")
@@ -151,6 +162,22 @@ class ProxyServer:
 
         print(f"[SOCKS] Connection closed: {ip}")
 
+    def free_port(self, port):
+        print(f"[INFO] Attempting to free port {port} if in use...")
+        try:
+            output = subprocess.check_output(
+                f"lsof -ti tcp:{port}", shell=True, text=True).strip()
+            if output:
+                pids = output.split('\n')
+                for pid in pids:
+                    print(f"[INFO] Killing process {pid} on port {port}...")
+                    subprocess.run(["kill", "-9", pid])
+                print(f"[INFO] Port {port} freed.")
+            else:
+                print(f"[INFO] Port {port} not in use.")
+        except Exception as e:
+            print(f"[WARN] Could not free port {port}: {e}")
+
     def start_websocket_server(self, port):
         async def server_coro():
             try:
@@ -198,23 +225,18 @@ class ProxyServer:
         if port in self.open_ports:
             print(f"[WARN] Port {port} is already open.")
             return
+        self.free_port(port)
+
         print(f"[INFO] Opening port {port} for WebSocket and SOCKS ...")
         self.open_ports[port] = {}
-        # Start servers in try/except to catch port-in-use errors and clean up if necessary
-        try:
-            self.start_websocket_server(port)
-            self.start_socks_server(port)
-        except Exception as e:
-            print(f"[ERROR] Failed to open port {port}: {e}")
-            if port in self.open_ports:
-                del self.open_ports[port]
+        self.start_websocket_server(port)
+        self.start_socks_server(port)
 
     def close_port(self, port):
         if port not in self.open_ports:
             print(f"[WARN] Port {port} is not open by proxy.")
             return
         print(f"[INFO] Closing proxy on port {port} (clean shutdown not implemented).")
-        # Note: Clean server close is not implemented; just remove port from tracking dict
         del self.open_ports[port]
 
     def show_open_ports(self):
@@ -269,4 +291,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user, exiting.")
         sys.exit(0)
-

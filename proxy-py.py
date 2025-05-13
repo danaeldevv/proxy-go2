@@ -153,9 +153,15 @@ class ProxyServer:
 
     def start_websocket_server(self, port):
         async def server_coro():
-            ws_server = await websockets.serve(self.handle_websocket, "0.0.0.0", port)
-            print(f"[INFO] WebSocket server listening on port {port}")
-            await ws_server.wait_closed()
+            try:
+                ws_server = await websockets.serve(self.handle_websocket, "0.0.0.0", port)
+                print(f"[INFO] WebSocket server listening on port {port}")
+                await ws_server.wait_closed()
+            except OSError as e:
+                if e.errno == 98:
+                    print(f"[ERROR] WebSocket port {port} already in use.")
+                else:
+                    print(f"[ERROR] WebSocket server error on port {port}: {e}")
 
         def run_loop():
             loop = asyncio.new_event_loop()
@@ -168,10 +174,16 @@ class ProxyServer:
 
     def start_socks_server(self, port):
         async def server_coro():
-            server = await asyncio.start_server(self.handle_socks, '0.0.0.0', port)
-            print(f"[INFO] SOCKS server listening on port {port}")
-            async with server:
-                await server.serve_forever()
+            try:
+                server = await asyncio.start_server(self.handle_socks, '0.0.0.0', port)
+                print(f"[INFO] SOCKS server listening on port {port}")
+                async with server:
+                    await server.serve_forever()
+            except OSError as e:
+                if e.errno == 98:
+                    print(f"[ERROR] SOCKS port {port} already in use.")
+                else:
+                    print(f"[ERROR] SOCKS server error on port {port}: {e}")
 
         def run_loop():
             loop = asyncio.new_event_loop()
@@ -188,14 +200,21 @@ class ProxyServer:
             return
         print(f"[INFO] Opening port {port} for WebSocket and SOCKS ...")
         self.open_ports[port] = {}
-        self.start_websocket_server(port)
-        self.start_socks_server(port)
+        # Start servers in try/except to catch port-in-use errors and clean up if necessary
+        try:
+            self.start_websocket_server(port)
+            self.start_socks_server(port)
+        except Exception as e:
+            print(f"[ERROR] Failed to open port {port}: {e}")
+            if port in self.open_ports:
+                del self.open_ports[port]
 
     def close_port(self, port):
         if port not in self.open_ports:
             print(f"[WARN] Port {port} is not open by proxy.")
             return
         print(f"[INFO] Closing proxy on port {port} (clean shutdown not implemented).")
+        # Note: Clean server close is not implemented; just remove port from tracking dict
         del self.open_ports[port]
 
     def show_open_ports(self):
@@ -223,6 +242,9 @@ class ProxyServer:
                 port = int(port_str)
                 if port < 1 or port > 65535:
                     print("[ERROR] Port number out of range (1-65535).")
+                    continue
+                if port in self.open_ports:
+                    print(f"[WARN] Port {port} is already open.")
                     continue
                 self.open_port(port)
 

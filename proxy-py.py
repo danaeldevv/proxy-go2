@@ -13,6 +13,8 @@ OPENSSH_PORT = 22
 class ProxyServer:
     def __init__(self):
         self.open_ports = {}
+        self.loop = asyncio.new_event_loop()
+        self.running = True
 
     async def proxy_bidirectional(self, reader1, writer1, reader2, writer2):
         async def pipe(reader, writer):
@@ -96,10 +98,7 @@ class ProxyServer:
         print(f"[SOCKS] Connection from {ip}")
 
         try:
-            # Send HTTP 200 OK response first
-            writer.write(b"HTTP/1.1 200 OK\r\n\r\n")
-            await writer.drain()
-
+            # Perform SOCKS handshake
             data = await reader.read(2)
             if len(data) < 2:
                 raise Exception("Invalid SOCKS handshake")
@@ -116,7 +115,10 @@ class ProxyServer:
                 raise Exception("Invalid SOCKS request")
             ver, cmd, rsv, atyp = data[0], data[1], data[2], data[3]
             if ver != 0x05:
-                raise Exception("Invalid SOCKS version in request")
+                writer.close()
+                await writer.wait_closed()
+                return
+
             if cmd != 0x01:  # Only CONNECT supported
                 writer.write(b'\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00')  # Command not supported
                 await writer.drain()
@@ -191,9 +193,8 @@ class ProxyServer:
                     print(f"[ERROR] WebSocket server error on port {port}: {e}")
 
         def run_loop():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(server_coro())
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(server_coro())
 
         ws_thread = threading.Thread(target=run_loop, daemon=True)
         ws_thread.start()
@@ -213,9 +214,8 @@ class ProxyServer:
                     print(f"[ERROR] SOCKS server error on port {port}: {e}")
 
         def run_loop():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(server_coro())
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(server_coro())
 
         socks_thread = threading.Thread(target=run_loop, daemon=True)
         socks_thread.start()
@@ -247,8 +247,8 @@ class ProxyServer:
             for port in self.open_ports.keys():
                 print(f" - Port {port}")
 
-    def menu(self):
-        while True:
+    def menu_loop(self):
+        while self.running:
             print("\n=== Multiprotocol Proxy with OpenSSH ===")
             self.show_open_ports()
             print("1. Open port")
@@ -280,14 +280,23 @@ class ProxyServer:
 
             elif choice == '3':
                 print("[INFO] Exiting proxy.")
-                sys.exit(0)
+                self.running = False
+                # Optionally, here you can stop open servers (not implemented)
+                break
             else:
                 print("[ERROR] Invalid option. Try again.")
 
+    def start(self):
+        menu_thread = threading.Thread(target=self.menu_loop, daemon=True)
+        menu_thread.start()
+        try:
+            self.loop.run_forever()
+        except KeyboardInterrupt:
+            print("\n[INFO] Interrupted by user, exiting.")
+            self.running = False
+            menu_thread.join()
+
+
 if __name__ == "__main__":
     proxy_server = ProxyServer()
-    try:
-        proxy_server.menu()
-    except KeyboardInterrupt:
-        print("\n[INFO] Interrupted by user, exiting.")
-        sys.exit(0)
+    proxy_server.start()

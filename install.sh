@@ -1,77 +1,54 @@
 #!/bin/bash
 
-# Nome do script Python
-SCRIPT_NAME="proxy-py.py"
-SCRIPT_PATH="/usr/local/bin/proxy_server.py"
+# Função para instalar pacotes se não estiverem presentes
+install_if_missing() {
+    if ! dpkg -l | grep -qw "$1"; then
+        echo "Instalando $1..."
+        sudo apt-get install -y "$1"
+    else
+        echo "$1 já está instalado."
+    fi
+}
+
+# Atualizar lista de pacotes
+sudo apt-get update
+
+# Verificar e instalar dependências do sistema
+install_if_missing "git"
+install_if_missing "python3"
+install_if_missing "python3-pip"
+
+# Instalar bibliotecas Python necessárias diretamente
+echo "Instalando bibliotecas Python necessárias..."
+pip3 install --upgrade pip
+pip3 install setuptools wheel
+
+# Se os scripts utilizam alguma biblioteca externa, liste aqui.
+# Pelo código anterior, não foram usadas bibliotecas externas específicas.
+# Caso futuramente utilize, inclua aqui, ex:
+# pip3 install websocket-client PySocks
+
+# Diretório do repositório
 REPO_URL="https://github.com/jeanfraga33/proxy-go2.git"
-REPO_DIR="proxy-go2"
+INSTALL_DIR="$HOME/proxy-go2"
 
-# Função para remover instalações anteriores
-remove_previous_installation() {
-    echo "Removendo instalações anteriores..."
-    if [ -f "$SCRIPT_PATH" ]; then
-        rm "$SCRIPT_PATH"
-        echo "Instalação anterior removida."
-    else
-        echo "Nenhuma instalação anterior encontrada."
-    fi
-}
+# Remover instalação anterior, se existir
+if [ -d "$INSTALL_DIR" ]; then
+    echo "Removendo instalação anterior..."
+    rm -rf "$INSTALL_DIR"
+fi
 
-# Remove o diretório do repositório clonado para evitar conflitos
-remove_existing_repo() {
-    if [ -d "$REPO_DIR" ]; then
-        echo "Removendo diretório antigo do repositório '$REPO_DIR'..."
-        rm -rf "$REPO_DIR"
-        echo "Diretório antigo removido."
-    fi
-}
+# Clonar o repositório
+echo "Clonando o repositório..."
+git clone "$REPO_URL" "$INSTALL_DIR"
 
-# Função para instalar Git e outras dependências
-install_dependencies() {
-    echo "Instalando Git, Python3 e dependências..."
-    sudo apt-get update
-    sudo apt-get install -y git python3 python3-pip
-    pip3 install --upgrade websockets
-    echo "Git e dependências instaladas."
-}
+# Criar links simbólicos para os scripts
+echo "Instalando scripts no sistema..."
+sudo ln -sf "$INSTALL_DIR/menu.py" /usr/local/bin/proxy-menu
+sudo ln -sf "$INSTALL_DIR/proxy_server.py" /usr/local/bin/proxy-server
 
-# Função para clonar o repositório do GitHub
-clone_repository() {
-    echo "Clonando o repositório do GitHub..."
-    git clone "$REPO_URL"
-    if [ $? -ne 0 ]; then
-        echo "Erro ao clonar o repositório. Abortando instalação."
-        exit 1
-    fi
-}
+# Tornar os scripts executáveis
+sudo chmod +x /usr/local/bin/proxy-menu
+sudo chmod +x /usr/local/bin/proxy-server
 
-# Função para copiar o script para o local final e configurar permissões
-install_script() {
-    if [ -f "$REPO_DIR/$SCRIPT_NAME" ]; then
-        sudo cp "$REPO_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
-        sudo chmod +x "$SCRIPT_PATH"
-        echo "Script instalado em $SCRIPT_PATH."
-    else
-        echo "Erro: O arquivo '$SCRIPT_NAME' não foi encontrado no repositório clonado."
-        exit 1
-    fi
-}
-
-# Função principal
-main() {
-    remove_previous_installation
-    remove_existing_repo
-    install_dependencies
-    clone_repository
-    install_script
-    echo ""
-    echo "Instalação concluída."
-    echo "Você pode executar o proxy com o comando:"
-    echo "  python3 $SCRIPT_PATH"
-    echo ""
-    echo "Ou, para executar diretamente (dependendo do shebang do script):"
-    echo "  $SCRIPT_PATH"
-}
-
-# Executa a função principal
-main
+echo "Instalação concluída! Você pode executar o menu com o comando 'proxy-menu' e o proxy com 'proxy-server'."

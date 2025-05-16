@@ -5,7 +5,6 @@ import threading
 import select
 import errno
 import signal
-import os
 
 SSH_HOST = '127.0.0.1'
 SSH_PORT = 22
@@ -83,14 +82,6 @@ def run_proxy(port):
     server_sock.listen(10000)
     print(f"Proxy server listening on port {port}")
 
-    def signal_handler(signum, frame):
-        print("Shutting down proxy server...")
-        server_sock.close()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
     while True:
         try:
             client_sock, client_addr = server_sock.accept()
@@ -101,12 +92,22 @@ def run_proxy(port):
         thread.daemon = True
         thread.start()
 
+def signal_handler(signum, frame):
+    print("Shutting down proxy server...")
+    sys.exit(0)
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: proxy_server.py <port>")
         sys.exit(1)
+    
     try:
         proxy_port = int(sys.argv[1])
+        
+        # Set up signal handling in the main thread
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
         # Run the proxy server in a separate thread
         proxy_thread = threading.Thread(target=run_proxy, args=(proxy_port,))
         proxy_thread.daemon = True

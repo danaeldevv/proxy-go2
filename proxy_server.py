@@ -125,4 +125,4 @@ def daemonize():
         # Exit parent
         sys.exit(0)
     os.setsid()
-    if os.fork() >
+    if os.fork() 

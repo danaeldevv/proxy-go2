@@ -125,4 +125,7 @@ def daemonize():
         # Exit parent
         sys.exit(0)
     os.setsid()
-    if os.fork() 
+    if os.fork() > 0:
+        sys.exit(0)
+    sys.stdout.flush()
+    sys.stderr.flush

@@ -1,93 +1,131 @@
 #!/usr/bin/env python3
 import sys
-import asyncio
+import socket
+import threading
+import select
+import errno
+import signal
+import os
 
 SSH_HOST = '127.0.0.1'
 SSH_PORT = 22
 BUFFER_SIZE = 8192
 
-async def handle_client(reader, writer):
+def handle_client(client_sock, client_addr):
     try:
-        # Peek first few bytes to detect protocol
-        reader._transport.settimeout(5)  # Not all asyncio transports support this; we'll approximate below
-
-        # Since asyncio streams don't support peek, we read up to 1024 bytes and then buffer it
-        initial_data = await reader.read(1024)
+        # Peek first few bytes from client to detect protocol
+        client_sock.settimeout(5)
+        initial_data = client_sock.recv(1024, socket.MSG_PEEK)
         if not initial_data:
-            writer.close()
-            await writer.wait_closed()
+            client_sock.close()
             return
 
-        # Handle protocol detection
+        # Simple detection: SOCKS5 starts with 0x05, HTTP (WS handshake) starts with GET or other methods
         if initial_data.startswith(b'\x05'):
-            # SOCKS5 handshake (simplified)
+            # SOCKS5 handshake
+            client_sock.recv(1024)  # consume the handshake completely (simplified)
             # Respond with HTTP/1.1 101 switching protocols (per user request)
             response = b"HTTP/1.1 101 Switching Protocols\r\n\r\n"
-            writer.write(response)
-            await writer.drain()
+            client_sock.sendall(response)
         else:
-            # HTTP/WebSocket handshake assumed
-            # Read remaining HTTP headers if any (simplified)
-            request_buffer = initial_data
+            # Assume HTTP/WebSocket handshake
+            # Read full HTTP header (simplified: read until double \r\n)
+            request_buffer = b""
             while b"\r\n\r\n" not in request_buffer:
-                chunk = await reader.read(1024)
+                chunk = client_sock.recv(1024)
                 if not chunk:
                     break
                 request_buffer += chunk
+            # Send HTTP/1.1 200 OK response as requested
             response = b"HTTP/1.1 200 OK\r\n\r\n"
-            writer.write(response)
-            await writer.drain()
+            client_sock.sendall(response)
 
         # Connect to OpenSSH server
-        ssh_reader, ssh_writer = await asyncio.open_connection(SSH_HOST, SSH_PORT)
+        ssh_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ssh_sock.connect((SSH_HOST, SSH_PORT))
 
-        async def forward(src_reader, dest_writer):
-            try:
-                while True:
-                    data = await src_reader.read(BUFFER_SIZE)
-                    if not data:
-                        break
-                    dest_writer.write(data)
-                    await dest_writer.drain()
-            except Exception:
-                pass
-
-        # Start forwarding data bi-directionally
-        client_to_ssh = asyncio.create_task(forward(reader, ssh_writer))
-        ssh_to_client = asyncio.create_task(forward(ssh_reader, writer))
-
-        await asyncio.wait(
-            [client_to_ssh, ssh_to_client],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-
-        # Close connections
-        ssh_writer.close()
-        writer.close()
-        await ssh_writer.wait_closed()
-        await writer.wait_closed()
+        # Forward data between client and ssh_sock bi-directionally
+        sockets = [client_sock, ssh_sock]
+        while True:
+            rlist, _, _ = select.select(sockets, [], [])
+            for s in rlist:
+                data = b''
+                try:
+                    data = s.recv(BUFFER_SIZE)
+                except socket.error as e:
+                    if e.errno != errno.ECONNRESET:
+                        raise
+                if not data:
+                    # Connection closed
+                    client_sock.close()
+                    ssh_sock.close()
+                    return
+                if s is client_sock:
+                    ssh_sock.sendall(data)
+                else:
+                    client_sock.sendall(data)
 
     except Exception as e:
+        # On any error, close sockets and exit thread
         try:
-            writer.close()
-            await writer.wait_closed()
+            client_sock.close()
+        except:
+            pass
+        try:
+            ssh_sock.close()
         except:
             pass
 
-async def run_proxy(port):
-    server = await asyncio.start_server(handle_client, '0.0.0.0', port)
+def run_proxy(port):
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind(('0.0.0.0', port))
+    server_sock.listen(10000)
     print(f"Proxy server listening on port {port}")
 
-    async with server:
-        await server.serve_forever()
+    def signal_handler(signum, frame):
+        print("Shutting down proxy server...")
+        server_sock.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    while True:
+        try:
+            client_sock, client_addr = server_sock.accept()
+        except OSError:
+            # Socket closed externally
+            break
+        thread = threading.Thread(target=handle_client, args=(client_sock, client_addr))
+        thread.daemon = True
+        thread.start()
+
+def daemonize():
+    """Turn the current process into a daemon."""
+    if os.fork() > 0:
+        # Exit parent
+        sys.exit(0)
+    os.setsid()
+    if os.fork() > 0:
+        sys.exit(0)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with open(os.devnull, 'r') as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+    with open('proxy.log', 'a+') as log_file:
+        os.dup2(log_file.fileno(), sys.stdout.fileno())
+        os.dup2(log_file.fileno(), sys.stderr.fileno())
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: proxy_server.py <port>")
         sys.exit(1)
+
     try:
         proxy_port = int(sys.argv[1])
-        asyncio.run(run_proxy(proxy_port))
+        daemonize()
+        run_proxy(proxy_port)
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)

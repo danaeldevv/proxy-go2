@@ -5,6 +5,8 @@ import threading
 import select
 import errno
 import signal
+import os
+import time
 
 SSH_HOST = '127.0.0.1'
 SSH_PORT = 22
@@ -92,31 +94,41 @@ def run_proxy(port):
         thread.daemon = True
         thread.start()
 
-def signal_handler(signum, frame):
-    print("Shutting down proxy server...")
-    sys.exit(0)
+def daemonize():
+    # Fork the current process
+    if os.fork() > 0:
+        # Exit the parent process
+        sys.exit(0)
+
+    # Create a new session
+    os.setsid()
+
+    # Fork again to ensure the daemon is not a session leader
+    if os.fork() > 0:
+        sys.exit(0)
+
+    # Redirect standard file descriptors
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with open(os.devnull, 'r') as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+    with open('proxy.log', 'a+') as log_file:
+        os.dup2(log_file.fileno(), sys.stdout.fileno())
+        os.dup2(log_file.fileno(), sys.stderr.fileno())
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: proxy_server.py <port>")
         sys.exit(1)
-    
+
     try:
         proxy_port = int(sys.argv[1])
         
-        # Set up signal handling in the main thread
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-
-        # Run the proxy server in a separate thread
-        proxy_thread = threading.Thread(target=run_proxy, args=(proxy_port,))
-        proxy_thread.daemon = True
-        proxy_thread.start()
-        print("Proxy server is running in the background.")
+        # Daemonize the process
+        daemonize()
         
-        # Keep the main thread alive to allow the user to use the terminal
-        while True:
-            pass  # You can replace this with any other logic you want to run in the main thread
+        # Run the proxy server
+        run_proxy(proxy_port)
 
     except Exception as e:
         print(f"Error: {e}")

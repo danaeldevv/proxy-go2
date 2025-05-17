@@ -6,20 +6,13 @@ import select
 import errno
 import signal
 import os
-import ssl
+import time
 
 SSH_HOST = '127.0.0.1'
 SSH_PORT = 22
 BUFFER_SIZE = 8192
 
-# SSL context for secure WebSocket connections
-def create_ssl_context():
-    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    # Load your certificate and key here
-    # context.load_cert_chain(certfile='path/to/certfile.pem', keyfile='path/to/keyfile.pem')
-    return context
-
-def handle_client(client_sock, client_addr, ssl_context):
+def handle_client(client_sock, client_addr):
     try:
         # Peek first few bytes from client to detect protocol
         client_sock.settimeout(5)
@@ -44,17 +37,9 @@ def handle_client(client_sock, client_addr, ssl_context):
                 if not chunk:
                     break
                 request_buffer += chunk
-            
-            # Check for WSS upgrade request
-            if b"Upgrade: websocket" in request_buffer and b"wss://" in request_buffer:
-                # Wrap the socket with SSL for secure WebSocket
-                client_sock = ssl_context.wrap_socket(client_sock, server_side=True)
-                response = b"HTTP/1.1 101 Switching Protocols\r\n\r\n"
-                client_sock.sendall(response)
-            else:
-                # Send HTTP/1.1 200 OK response as requested
-                response = b"HTTP/1.1 200 OK\r\n\r\n"
-                client_sock.sendall(response)
+            # Send HTTP/1.1 200 OK response as requested
+            response = b"HTTP/1.1 200 OK\r\n\r\n"
+            client_sock.sendall(response)
 
         # Connect to OpenSSH server
         ssh_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -99,33 +84,52 @@ def run_proxy(port):
     server_sock.listen(10000)
     print(f"Proxy server listening on port {port}")
 
-    ssl_context = create_ssl_context()
-
-    def signal_handler(signum, frame):
-        print("Shutting down proxy server...")
-        server_sock.close()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
     while True:
         try:
             client_sock, client_addr = server_sock.accept()
         except OSError:
             # Socket closed externally
             break
-        thread = threading.Thread(target=handle_client, args=(client_sock, client_addr, ssl_context))
+        thread = threading.Thread(target=handle_client, args=(client_sock, client_addr))
         thread.daemon = True
         thread.start()
 
 def daemonize():
-    """Turn the current process into a daemon."""
+    # Fork the current process
     if os.fork() > 0:
-        # Exit parent
+        # Exit the parent process
         sys.exit(0)
+
+    # Create a new session
     os.setsid()
+
+    # Fork again to ensure the daemon is not a session leader
     if os.fork() > 0:
         sys.exit(0)
+
+    # Redirect standard file descriptors
     sys.stdout.flush()
-    sys.stderr.flush
+    sys.stderr.flush()
+    with open(os.devnull, 'r') as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+    with open('proxy.log', 'a+') as log_file:
+        os.dup2(log_file.fileno(), sys.stdout.fileno())
+        os.dup2(log_file.fileno(), sys.stderr.fileno())
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: proxy_server.py <port>")
+        sys.exit(1)
+
+    try:
+        proxy_port = int(sys.argv[1])
+        
+        # Daemonize the process
+        daemonize()
+        
+        # Run the proxy server
+        run_proxy(proxy_port)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)

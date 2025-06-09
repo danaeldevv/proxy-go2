@@ -8,7 +8,7 @@ import signal
 import os
 import time
 
-SSH_HOST = '127.0.0.1'
+SSH_HOST = '34.176.21.72'
 SSH_PORT = 22
 BUFFER_SIZE = 8192
 
